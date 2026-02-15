@@ -6,6 +6,7 @@ import { fetchRepoContents } from "@/lib/github";
 import { streamSurfaceScan, callSecurityReview, streamDeepProbe } from "@/lib/api";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
+import { ScanSequence } from "@/components/ScanSequence";
 
 interface LogEntry {
   agent: string;
@@ -47,6 +48,8 @@ const ScanLive = () => {
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [status, setStatus] = useState<"fetching" | "scanning" | "completed" | "error">("fetching");
+  const [sequenceComplete, setSequenceComplete] = useState(false);
+  const [finalHealthScore, setFinalHealthScore] = useState<number | null>(null);
   const [rawContent, setRawContent] = useState("");
   const [reportId, setReportId] = useState<string | null>(null);
   const collectedFindings = useRef<Array<{ category: string; severity: string; title: string; description: string; file_path?: string; line_number?: number }>>([]);
@@ -320,6 +323,7 @@ const ScanLive = () => {
               .update({ status: "completed" })
               .eq("id", report.id);
 
+            setFinalHealthScore(summary?.health_score ?? 72);
             setStatus("completed");
             addLog({ agent: "System", message: "All agents complete. Report ready.", type: "system", color: "text-primary" });
           },
@@ -341,31 +345,37 @@ const ScanLive = () => {
 
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
-      <div className="fixed inset-0 grid-pattern opacity-40 pointer-events-none" />
+      <div className="fixed inset-0 grid-pattern opacity-20 pointer-events-none" />
 
       <nav className="relative z-10 flex items-center justify-between px-6 py-5 max-w-7xl mx-auto">
         <div className="flex items-center gap-2 cursor-pointer" onClick={() => navigate("/dashboard")}>
           <Shield className="w-7 h-7 text-primary" />
           <span className="text-lg font-bold tracking-tight">
-            <span className="text-gradient-neon">Vibe</span>
-            <span className="text-foreground">2Prod</span>
+            <span className="text-gradient-emerald">Ship</span>
+            <span className="text-foreground">Safe</span>
           </span>
         </div>
         <div className="flex items-center gap-2">
-          {status === "scanning" && (
-            <span className="flex items-center gap-2 text-sm text-neon-green">
-              <span className="w-2 h-2 rounded-full bg-neon-green animate-pulse-neon" />
-              Scanning...
+          {(status === "fetching" || status === "scanning") && !sequenceComplete && (
+            <span className="flex items-center gap-2 text-sm font-mono text-emerald-400">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 pulse-dot" />
+              Initializing
+            </span>
+          )}
+          {(status === "fetching" || status === "scanning") && sequenceComplete && (
+            <span className="flex items-center gap-2 text-sm font-mono text-violet-400">
+              <span className="w-2 h-2 rounded-full bg-violet-500 pulse-dot" />
+              Scanning
             </span>
           )}
           {status === "completed" && (
-            <span className="flex items-center gap-2 text-sm text-primary">
+            <span className="flex items-center gap-2 text-sm font-mono text-emerald-400">
               <CheckCircle2 className="w-4 h-4" />
               Complete
             </span>
           )}
           {status === "error" && (
-            <span className="flex items-center gap-2 text-sm text-neon-red">
+            <span className="flex items-center gap-2 text-sm font-mono text-rose-500">
               <AlertTriangle className="w-4 h-4" />
               Error
             </span>
@@ -374,48 +384,64 @@ const ScanLive = () => {
       </nav>
 
       <main className="relative z-10 max-w-4xl mx-auto px-6 pt-8">
-        <h1 className="text-2xl font-bold mb-1">The Thinking Stream</h1>
-        <p className="text-sm text-muted-foreground mb-6">
-          {state?.repoUrl && <span className="font-mono text-xs">{state.repoUrl}</span>}
-        </p>
-
-        <div className="glass-strong rounded-xl overflow-hidden">
-          <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
-            <div className="w-3 h-3 rounded-full bg-neon-red/80" />
-            <div className="w-3 h-3 rounded-full bg-neon-orange/80" />
-            <div className="w-3 h-3 rounded-full bg-neon-green/80" />
-            <span className="ml-3 text-xs font-mono text-muted-foreground">agent-swarm-output</span>
-          </div>
-          <div ref={terminalRef} className="p-6 font-mono text-sm min-h-[500px] max-h-[600px] overflow-y-auto space-y-1">
-            {logs.map((log, i) => (
-              <p key={i}>
-                <span className={log.color}>▸ {log.agent}:</span>{" "}
-                <span className="text-muted-foreground">{log.message}</span>
-              </p>
-            ))}
-            {(status === "fetching" || status === "scanning") && (
-              <p className="text-primary animate-pulse-neon">█</p>
-            )}
-          </div>
-        </div>
-
-        {status === "completed" && reportId && (
-          <div className="mt-6 flex justify-end">
-            <Button onClick={() => navigate(`/report/${reportId}`)} className="neon-glow-green">
-              View Health Report
-            </Button>
+        {/* ── SCAN SEQUENCE (plays first) ── */}
+        {!sequenceComplete && (
+          <div className="glass rounded-xl p-8">
+            <ScanSequence
+              onComplete={() => setSequenceComplete(true)}
+              repoUrl={state?.repoUrl}
+              healthScore={finalHealthScore ?? 72}
+            />
           </div>
         )}
 
-        {status === "error" && (
-          <div className="mt-6 flex justify-end gap-3">
-            <Button variant="outline" onClick={() => navigate("/scan/new")}>
-              Try Again
-            </Button>
-            <Button variant="outline" onClick={() => navigate("/dashboard")}>
-              Dashboard
-            </Button>
-          </div>
+        {/* ── TERMINAL (shows after sequence) ── */}
+        {sequenceComplete && (
+          <>
+            <h1 className="text-2xl font-bold mb-1">Agent Stream</h1>
+            <p className="text-sm text-muted-foreground mb-6">
+              {state?.repoUrl && <span className="font-mono text-xs text-muted-foreground/60">{state.repoUrl}</span>}
+            </p>
+
+            <div className="glass rounded-xl overflow-hidden">
+              <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5">
+                <div className="w-2.5 h-2.5 rounded-full bg-rose-500/80" />
+                <div className="w-2.5 h-2.5 rounded-full bg-amber-500/80" />
+                <div className="w-2.5 h-2.5 rounded-full bg-emerald-400/80" />
+                <span className="ml-3 text-[11px] font-mono text-muted-foreground">agent-swarm · live</span>
+              </div>
+              <div ref={terminalRef} className="p-6 font-mono text-sm min-h-[500px] max-h-[600px] overflow-y-auto space-y-1">
+                {logs.map((log, i) => (
+                  <p key={i}>
+                    <span className={log.color}>▸ {log.agent}:</span>{" "}
+                    <span className="text-muted-foreground">{log.message}</span>
+                  </p>
+                ))}
+                {(status === "fetching" || status === "scanning") && (
+                  <p className="text-emerald-400 animate-pulse">█</p>
+                )}
+              </div>
+            </div>
+
+            {status === "completed" && reportId && (
+              <div className="mt-6 flex justify-end">
+                <Button onClick={() => navigate(`/report/${reportId}`)} className="glow-emerald">
+                  View Health Report
+                </Button>
+              </div>
+            )}
+
+            {status === "error" && (
+              <div className="mt-6 flex justify-end gap-3">
+                <Button variant="outline" onClick={() => navigate("/scan/new")}>
+                  Try Again
+                </Button>
+                <Button variant="outline" onClick={() => navigate("/dashboard")}>
+                  Dashboard
+                </Button>
+              </div>
+            )}
+          </>
         )}
       </main>
     </div>
