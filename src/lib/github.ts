@@ -1,29 +1,51 @@
-// Fetch GitHub repo contents via GitHub API (public repos only for now)
+import { supabase } from "@/integrations/supabase/client";
+
+// Get the user's GitHub token from their profile
+async function getGitHubToken(): Promise<string | null> {
+  const { data: { user } } = await supabase.auth.getUser();
+  if (!user) return null;
+
+  const { data } = await supabase
+    .from("profiles")
+    .select("github_access_token")
+    .eq("user_id", user.id)
+    .single();
+
+  return (data as any)?.github_access_token || null;
+}
+
+// Fetch GitHub repo contents via GitHub API
 export async function fetchRepoContents(repoUrl: string): Promise<string> {
-  // Extract owner/repo from URL
   const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
   if (!match) throw new Error("Invalid GitHub URL");
 
   const [, owner, repo] = match;
   const cleanRepo = repo.replace(/\.git$/, "");
 
+  const token = await getGitHubToken();
+  const headers: Record<string, string> = {};
+  if (token) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
   // Fetch file tree
   const treeRes = await fetch(
-    `https://api.github.com/repos/${owner}/${cleanRepo}/git/trees/main?recursive=1`
+    `https://api.github.com/repos/${owner}/${cleanRepo}/git/trees/main?recursive=1`,
+    { headers }
   );
 
   if (!treeRes.ok) {
-    // Try 'master' branch
     const masterRes = await fetch(
-      `https://api.github.com/repos/${owner}/${cleanRepo}/git/trees/master?recursive=1`
+      `https://api.github.com/repos/${owner}/${cleanRepo}/git/trees/master?recursive=1`,
+      { headers }
     );
-    if (!masterRes.ok) throw new Error("Could not fetch repo tree. Is the repo public?");
+    if (!masterRes.ok) throw new Error("Could not fetch repo tree. Is the repo public, or have you connected GitHub in Settings?");
     const masterData = await masterRes.json();
-    return await buildRepoContent(owner, cleanRepo, masterData.tree);
+    return await buildRepoContent(owner, cleanRepo, masterData.tree, headers);
   }
 
   const treeData = await treeRes.json();
-  return await buildRepoContent(owner, cleanRepo, treeData.tree);
+  return await buildRepoContent(owner, cleanRepo, treeData.tree, headers);
 }
 
 interface TreeItem {
@@ -32,10 +54,10 @@ interface TreeItem {
   size?: number;
 }
 
-async function buildRepoContent(owner: string, repo: string, tree: TreeItem[]): Promise<string> {
+async function buildRepoContent(owner: string, repo: string, tree: TreeItem[], headers: Record<string, string>): Promise<string> {
   const relevantFiles = tree.filter((item: TreeItem) => {
     if (item.type !== "blob") return false;
-    if (item.size && item.size > 100000) return false; // Skip files > 100KB
+    if (item.size && item.size > 100000) return false;
     
     const ext = item.path.split(".").pop()?.toLowerCase();
     const relevantExtensions = [
@@ -52,10 +74,8 @@ async function buildRepoContent(owner: string, repo: string, tree: TreeItem[]): 
     return relevantExtensions.includes(ext || "") || relevantNames.includes(item.path.split("/").pop() || "");
   });
 
-  // Build file tree string
   let content = `File tree:\n${tree.map((i: TreeItem) => `${i.type === "tree" ? "📁" : "📄"} ${i.path}`).join("\n")}\n\n`;
 
-  // Fetch content of key files (limit to 30 most important)
   const priorityFiles = relevantFiles
     .sort((a: TreeItem, b: TreeItem) => {
       const priority = (p: string) => {
@@ -74,7 +94,8 @@ async function buildRepoContent(owner: string, repo: string, tree: TreeItem[]): 
   for (const file of priorityFiles) {
     try {
       const res = await fetch(
-        `https://api.github.com/repos/${owner}/${repo}/contents/${file.path}`
+        `https://api.github.com/repos/${owner}/${repo}/contents/${file.path}`,
+        { headers }
       );
       if (res.ok) {
         const data = await res.json();
