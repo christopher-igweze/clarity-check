@@ -43,11 +43,18 @@ const Settings = () => {
   // Handle GitHub OAuth callback
   useEffect(() => {
     const code = searchParams.get("code");
-    if (!code || !user) return;
+    if (!code) return;
+
+    // Wait for user to be available (auth session may still be loading)
+    if (!user) {
+      console.log("GitHub OAuth: waiting for auth session...");
+      return;
+    }
 
     const exchangeCode = async () => {
       setConnectingGithub(true);
       try {
+        console.log("GitHub OAuth: exchanging code...");
         const resp = await fetch(`${FUNCTIONS_URL}/github-oauth`, {
           method: "POST",
           headers: {
@@ -62,10 +69,11 @@ const Settings = () => {
         });
 
         const data = await resp.json();
+        console.log("GitHub OAuth response:", resp.status, data);
         if (!resp.ok) throw new Error(data.error || "Failed to connect GitHub");
 
         // Save token to profile
-        await supabase
+        const { error: updateError } = await supabase
           .from("profiles")
           .update({
             github_username: data.github_username,
@@ -73,6 +81,11 @@ const Settings = () => {
             github_access_token: data.access_token,
           } as any)
           .eq("user_id", user.id);
+
+        if (updateError) {
+          console.error("Profile update error:", updateError);
+          throw new Error("Failed to save GitHub token");
+        }
 
         setGithubUsername(data.github_username);
         setAvatarUrl(data.avatar_url);
@@ -82,7 +95,7 @@ const Settings = () => {
         // Clean URL
         window.history.replaceState({}, "", "/settings");
       } catch (err) {
-        console.error(err);
+        console.error("GitHub OAuth error:", err);
         toast({ title: "Error", description: err instanceof Error ? err.message : "Failed to connect GitHub", variant: "destructive" });
       }
       setConnectingGithub(false);
