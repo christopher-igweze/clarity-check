@@ -7,12 +7,10 @@ GET /api/status/{scan_id}.
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, BackgroundTasks, Request, HTTPException
-from slowapi import Limiter
 
 from models.scan import AuditRequest, AuditResponse, ScanStatus
 from models.agent_log import AgentLogEntry
@@ -27,6 +25,7 @@ router = APIRouter()
 
 async def _run_audit(
     scan_id: UUID,
+    project_id: UUID,
     request: AuditRequest,
     user_id: str,
     github_token: str | None = None,
@@ -56,17 +55,10 @@ async def _run_audit(
         # Persist to Supabase
         await db.save_report(scan_id, report)
 
-        # Persist findings and action items
-        project_id = scan_id  # simplified — in prod, look up from projects table
-        await db.save_findings(
-            scan_id, project_id, UUID(user_id), report.findings
-        )
-        await db.save_action_items(
-            scan_id, project_id, UUID(user_id), report.action_items
-        )
-        await db.save_education(
-            scan_id, project_id, UUID(user_id), report.education_cards
-        )
+        uid = UUID(user_id)
+        await db.save_findings(scan_id, project_id, uid, report.findings)
+        await db.save_action_items(scan_id, project_id, uid, report.action_items)
+        await db.save_education(scan_id, project_id, uid, report.education_cards)
 
     except Exception:
         logger.exception("Audit background task failed for scan %s", scan_id)
@@ -87,11 +79,20 @@ async def start_audit(
     # Create the SSE event bus before the background task starts
     event_buses[scan_id] = []
 
-    # Create the scan_reports row
-    # In a real implementation, we'd look up or create the project first
     try:
+        # Resolve or create the project row so scan_reports.project_id FK is valid
+        project_id = await db.get_or_create_project(
+            user_id=UUID(user_id),
+            repo_url=str(request_body.repo_url),
+            vibe_prompt=request_body.vibe_prompt,
+            project_charter=request_body.project_charter,
+            scan_tier=request_body.scan_tier.value,
+        )
+
+        # Insert scan_reports row using our scan_id as the row id
         await db.create_scan_report(
-            project_id=scan_id,  # simplified
+            scan_id=scan_id,
+            project_id=project_id,
             user_id=UUID(user_id),
             scan_tier=request_body.scan_tier.value,
         )
@@ -100,7 +101,7 @@ async def start_audit(
         raise HTTPException(status_code=500, detail="Failed to create scan")
 
     background_tasks.add_task(
-        _run_audit, scan_id, request_body, user_id
+        _run_audit, scan_id, project_id, request_body, user_id
     )
 
     return AuditResponse(scan_id=scan_id)

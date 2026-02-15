@@ -20,15 +20,69 @@ def _client() -> Client:
     return create_client(settings.supabase_url, settings.supabase_service_key)
 
 
-async def create_scan_report(
-    project_id: UUID, user_id: UUID, scan_tier: str
+# ------------------------------------------------------------------ #
+# Projects
+# ------------------------------------------------------------------ #
+
+
+async def get_or_create_project(
+    user_id: UUID,
+    repo_url: str,
+    repo_name: str | None = None,
+    vibe_prompt: str | None = None,
+    project_charter: dict | None = None,
+    scan_tier: str = "deep",
 ) -> UUID:
-    """Insert a new scan_reports row and return its id."""
+    """Return the project ID for *repo_url*, creating the row if needed."""
+    client = _client()
+    existing = (
+        client.table("projects")
+        .select("id")
+        .eq("user_id", str(user_id))
+        .eq("repo_url", repo_url)
+        .limit(1)
+        .execute()
+    )
+    if existing.data:
+        return UUID(existing.data[0]["id"])
+
+    row = (
+        client.table("projects")
+        .insert(
+            {
+                "user_id": str(user_id),
+                "repo_url": repo_url,
+                "repo_name": repo_name,
+                "vibe_prompt": vibe_prompt,
+                "project_charter": project_charter,
+                "latest_scan_tier": scan_tier,
+                "scan_count": 1,
+            }
+        )
+        .execute()
+    )
+    return UUID(row.data[0]["id"])
+
+
+# ------------------------------------------------------------------ #
+# Scan reports
+# ------------------------------------------------------------------ #
+
+
+async def create_scan_report(
+    scan_id: UUID, project_id: UUID, user_id: UUID, scan_tier: str
+) -> UUID:
+    """Insert a new scan_reports row using the caller-supplied *scan_id*.
+
+    The caller's ``scan_id`` becomes the row ``id`` so every downstream
+    reference (update_scan_status, save_report, etc.) targets the same row.
+    """
     client = _client()
     row = (
         client.table("scan_reports")
         .insert(
             {
+                "id": str(scan_id),
                 "project_id": str(project_id),
                 "user_id": str(user_id),
                 "scan_tier": scan_tier,
@@ -62,6 +116,11 @@ async def save_report(scan_id: UUID, report: AuditReport) -> None:
     ).eq("id", str(scan_id)).execute()
 
 
+# ------------------------------------------------------------------ #
+# Findings (raw scanner output → action_items table)
+# ------------------------------------------------------------------ #
+
+
 async def save_findings(
     scan_id: UUID, project_id: UUID, user_id: UUID, findings: list[Finding]
 ) -> None:
@@ -87,34 +146,25 @@ async def save_findings(
     client.table("action_items").insert(rows).execute()
 
 
-async def save_education(
-    scan_id: UUID,
-    project_id: UUID,
-    user_id: UUID,
-    cards: list[EducationCard],
-) -> None:
-    """Attach education text to existing action_items."""
-    if not cards:
-        return
-    client = _client()
-    for card in cards:
-        client.table("action_items").update(
-            {
-                "why_it_matters": card.why_it_matters,
-                "cto_perspective": card.cto_perspective,
-            }
-        ).eq("scan_report_id", str(scan_id)).execute()
+# ------------------------------------------------------------------ #
+# Action items (Planner output)
+# ------------------------------------------------------------------ #
 
 
 async def save_action_items(
     scan_id: UUID, project_id: UUID, user_id: UUID, items: list[ActionItem]
 ) -> None:
-    """Persist prioritised action items from the Planner."""
+    """Persist prioritised action items from the Planner.
+
+    Each row uses the ActionItem's model ``id`` so that save_education
+    can target a specific row later.
+    """
     if not items:
         return
     client = _client()
     rows = [
         {
+            "id": str(item.id),
             "scan_report_id": str(scan_id),
             "project_id": str(project_id),
             "user_id": str(user_id),
@@ -128,3 +178,27 @@ async def save_action_items(
         for item in items
     ]
     client.table("action_items").insert(rows).execute()
+
+
+# ------------------------------------------------------------------ #
+# Education cards (Educator output → update existing action_items)
+# ------------------------------------------------------------------ #
+
+
+async def save_education(
+    scan_id: UUID,
+    project_id: UUID,
+    user_id: UUID,
+    cards: list[EducationCard],
+) -> None:
+    """Attach education text to specific action_items rows."""
+    if not cards:
+        return
+    client = _client()
+    for card in cards:
+        client.table("action_items").update(
+            {
+                "why_it_matters": card.why_it_matters,
+                "cto_perspective": card.cto_perspective,
+            }
+        ).eq("id", str(card.action_item_id)).execute()

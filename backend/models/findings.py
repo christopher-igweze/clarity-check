@@ -78,9 +78,9 @@ class ActionItem(BaseModel):
 
 
 class EducationCard(BaseModel):
-    """Human-readable explanation attached to a finding."""
+    """Human-readable explanation attached to an action item."""
 
-    finding_id: UUID
+    action_item_id: UUID
     why_it_matters: str
     cto_perspective: str
 

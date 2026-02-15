@@ -49,7 +49,7 @@ Assume the reader is smart but not a developer.
 Output a JSON array:
 [
   {
-    "finding_id": "uuid",
+    "action_item_id": "uuid",
     "why_it_matters": "...",
     "cto_perspective": "..."
   }
@@ -84,8 +84,8 @@ class EducatorAgent(BaseVibe2ProdAgent):
             return []
 
         prompt = (
-            "Generate education cards for each of these findings/action items. "
-            "Match each card to the item's id (or title if no id).\n\n"
+            "Generate education cards for each of these action items. "
+            "Use each item's \"id\" field as the \"action_item_id\" in your output.\n\n"
             f"Items:\n{json.dumps(all_items, indent=2)}"
         )
 
@@ -99,7 +99,7 @@ class EducatorAgent(BaseVibe2ProdAgent):
 
         for c in cards:
             self._log(
-                f"Education card generated for {str(c.finding_id)[:8]}...",
+                f"Education card generated for {str(c.action_item_id)[:8]}...",
                 event_type=SSEEventType.education_card,
                 data=c.model_dump(mode="json"),
             )
@@ -142,7 +142,7 @@ class EducatorAgent(BaseVibe2ProdAgent):
             try:
                 cards.append(
                     EducationCard(
-                        finding_id=item["finding_id"],
+                        action_item_id=item["action_item_id"],
                         why_it_matters=item.get("why_it_matters", ""),
                         cto_perspective=item.get("cto_perspective", ""),
                     )
