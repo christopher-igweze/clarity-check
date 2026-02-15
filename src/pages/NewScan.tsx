@@ -4,7 +4,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Shield, ArrowRight, Zap, Microscope, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
-import { supabase } from "@/integrations/supabase/client";
+import { startAudit } from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { RepoSelector } from "@/components/RepoSelector";
 
@@ -21,39 +21,24 @@ const NewScan = () => {
     setLoading(true);
 
     try {
-      // Extract repo name
-      const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
-      const repoName = match ? `${match[1]}/${match[2].replace(/\.git$/, "")}` : repoUrl;
-
-      // Create project in DB
-      const { data: project, error } = await supabase
-        .from("projects")
-        .insert({
-          user_id: user.id,
-          repo_url: repoUrl.trim(),
-          repo_name: repoName,
-          vibe_prompt: vibePrompt || null,
-          latest_scan_tier: tier,
-        })
-        .select()
-        .single();
-
-      if (error) throw error;
+      const { scanId } = await startAudit({
+        repoUrl: repoUrl.trim(),
+        scanTier: tier,
+        vibePrompt: vibePrompt || undefined,
+      });
 
       // Navigate to scan view with state
       navigate("/scan/live", {
         state: {
-          projectId: project.id,
+          scanId,
           repoUrl: repoUrl.trim(),
-          vibePrompt,
-          tier,
         },
       });
     } catch (err) {
       console.error(err);
       toast({
         title: "Error",
-        description: "Failed to create project. Please try again.",
+        description: "Failed to start audit. Please try again.",
         variant: "destructive",
       });
     } finally {
