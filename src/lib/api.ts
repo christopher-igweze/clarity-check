@@ -85,6 +85,36 @@ export async function streamSurfaceScan({
   onDone();
 }
 
+export async function callSecurityReview({
+  reviewType,
+  content,
+  findings,
+  codeChanges,
+  projectCharter,
+}: {
+  reviewType: "validate_findings" | "code_review" | "full_scan";
+  content?: string;
+  findings?: unknown[];
+  codeChanges?: unknown;
+  projectCharter?: Record<string, unknown>;
+}) {
+  const resp = await fetch(`${FUNCTIONS_URL}/security-review`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+    },
+    body: JSON.stringify({ reviewType, content, findings, codeChanges, projectCharter }),
+  });
+
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(err || "Security review failed");
+  }
+
+  return resp.json();
+}
+
 export async function streamVisionIntake({
   messages,
   repoUrl,

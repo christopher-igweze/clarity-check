@@ -3,7 +3,7 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { Shield, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { fetchRepoContents } from "@/lib/github";
-import { streamSurfaceScan } from "@/lib/api";
+import { streamSurfaceScan, callSecurityReview } from "@/lib/api";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 
@@ -161,8 +161,7 @@ const ScanLive = () => {
             }
           },
           onDone: async () => {
-            setStatus("completed");
-            addLog({ agent: "System", message: "Scan completed successfully.", type: "system", color: "text-primary" });
+            addLog({ agent: "System", message: "Surface scan completed. Starting security review...", type: "system", color: "text-primary" });
 
             const summary = collectedSummary.current;
 
@@ -170,7 +169,7 @@ const ScanLive = () => {
             await supabase
               .from("scan_reports")
               .update({
-                status: "completed",
+                status: "reviewing",
                 completed_at: new Date().toISOString(),
                 report_data: { raw_response: fullResponse },
                 ...(summary ? {
@@ -208,6 +207,53 @@ const ScanLive = () => {
               }));
               await supabase.from("action_items").insert(items);
             }
+
+            // Run Agent_Security validation
+            addLog({ agent: "Agent_Security", message: "🛡️ Validating scan findings for false positives...", type: "log", color: "text-neon-red" });
+            try {
+              const securityResult = await callSecurityReview({
+                reviewType: "validate_findings",
+                findings: collectedFindings.current,
+              });
+
+              const secContent = securityResult.choices?.[0]?.message?.content || "";
+              let securityReview = null;
+              try {
+                securityReview = JSON.parse(secContent);
+              } catch {
+                // Try to extract JSON from markdown code blocks
+                const jsonMatch = secContent.match(/```(?:json)?\s*([\s\S]*?)```/);
+                if (jsonMatch) {
+                  try { securityReview = JSON.parse(jsonMatch[1]); } catch { /* ignore */ }
+                }
+              }
+
+              if (securityReview) {
+                await supabase
+                  .from("scan_reports")
+                  .update({ security_review: securityReview as any })
+                  .eq("id", report.id);
+                addLog({ agent: "Agent_Security", message: `🛡️ Security review complete. Verdict recorded.`, type: "log", color: "text-neon-red" });
+              } else {
+                addLog({ agent: "Agent_Security", message: `🛡️ Security review returned unstructured response. Saved as raw.`, type: "log", color: "text-neon-orange" });
+                await supabase
+                  .from("scan_reports")
+                  .update({ security_review: { raw: secContent } as any })
+                  .eq("id", report.id);
+              }
+            } catch (secErr) {
+              console.error("Security review error:", secErr);
+              addLog({ agent: "Agent_Security", message: `🛡️ Security review failed: ${secErr instanceof Error ? secErr.message : "Unknown error"}`, type: "error", color: "text-neon-red" });
+            }
+
+            // Mark as completed
+            await supabase
+              .from("scan_reports")
+              .update({ status: "completed" })
+              .eq("id", report.id);
+
+            setStatus("completed");
+            addLog({ agent: "System", message: "All agents complete. Report ready.", type: "system", color: "text-primary" });
           },
         });
       } catch (err) {
