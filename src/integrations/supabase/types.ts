@@ -14,7 +14,317 @@ export type Database = {
   }
   public: {
     Tables: {
-      [_ in never]: never
+      action_items: {
+        Row: {
+          category: string
+          created_at: string
+          cto_perspective: string | null
+          description: string | null
+          file_path: string | null
+          fix_status: string
+          id: string
+          line_number: number | null
+          project_id: string
+          scan_report_id: string
+          severity: string
+          source: string
+          title: string
+          user_id: string
+          why_it_matters: string | null
+        }
+        Insert: {
+          category: string
+          created_at?: string
+          cto_perspective?: string | null
+          description?: string | null
+          file_path?: string | null
+          fix_status?: string
+          id?: string
+          line_number?: number | null
+          project_id: string
+          scan_report_id: string
+          severity: string
+          source?: string
+          title: string
+          user_id: string
+          why_it_matters?: string | null
+        }
+        Update: {
+          category?: string
+          created_at?: string
+          cto_perspective?: string | null
+          description?: string | null
+          file_path?: string | null
+          fix_status?: string
+          id?: string
+          line_number?: number | null
+          project_id?: string
+          scan_report_id?: string
+          severity?: string
+          source?: string
+          title?: string
+          user_id?: string
+          why_it_matters?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "action_items_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "action_items_scan_report_id_fkey"
+            columns: ["scan_report_id"]
+            isOneToOne: false
+            referencedRelation: "scan_reports"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      fix_attempts: {
+        Row: {
+          action_item_id: string
+          agent_logs: Json | null
+          completed_at: string | null
+          created_at: string
+          diff_preview: string | null
+          id: string
+          pr_url: string | null
+          project_id: string
+          sandbox_id: string | null
+          started_at: string | null
+          status: string
+          user_id: string
+        }
+        Insert: {
+          action_item_id: string
+          agent_logs?: Json | null
+          completed_at?: string | null
+          created_at?: string
+          diff_preview?: string | null
+          id?: string
+          pr_url?: string | null
+          project_id: string
+          sandbox_id?: string | null
+          started_at?: string | null
+          status?: string
+          user_id: string
+        }
+        Update: {
+          action_item_id?: string
+          agent_logs?: Json | null
+          completed_at?: string | null
+          created_at?: string
+          diff_preview?: string | null
+          id?: string
+          pr_url?: string | null
+          project_id?: string
+          sandbox_id?: string | null
+          started_at?: string | null
+          status?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "fix_attempts_action_item_id_fkey"
+            columns: ["action_item_id"]
+            isOneToOne: false
+            referencedRelation: "action_items"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "fix_attempts_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      profiles: {
+        Row: {
+          avatar_url: string | null
+          created_at: string
+          display_name: string | null
+          github_username: string | null
+          id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          github_username?: string | null
+          id?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          avatar_url?: string | null
+          created_at?: string
+          display_name?: string | null
+          github_username?: string | null
+          id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
+      projects: {
+        Row: {
+          created_at: string
+          id: string
+          latest_health_score: number | null
+          latest_scan_tier: string | null
+          project_charter: Json | null
+          repo_name: string | null
+          repo_url: string
+          scan_count: number
+          updated_at: string
+          user_id: string
+          vibe_prompt: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          latest_health_score?: number | null
+          latest_scan_tier?: string | null
+          project_charter?: Json | null
+          repo_name?: string | null
+          repo_url: string
+          scan_count?: number
+          updated_at?: string
+          user_id: string
+          vibe_prompt?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          latest_health_score?: number | null
+          latest_scan_tier?: string | null
+          project_charter?: Json | null
+          repo_name?: string | null
+          repo_url?: string
+          scan_count?: number
+          updated_at?: string
+          user_id?: string
+          vibe_prompt?: string | null
+        }
+        Relationships: []
+      }
+      scan_reports: {
+        Row: {
+          agent_logs: Json | null
+          completed_at: string | null
+          created_at: string
+          health_score: number | null
+          id: string
+          project_id: string
+          reliability_score: number | null
+          report_data: Json | null
+          scalability_score: number | null
+          scan_tier: string
+          security_score: number | null
+          started_at: string | null
+          status: string
+          user_id: string
+        }
+        Insert: {
+          agent_logs?: Json | null
+          completed_at?: string | null
+          created_at?: string
+          health_score?: number | null
+          id?: string
+          project_id: string
+          reliability_score?: number | null
+          report_data?: Json | null
+          scalability_score?: number | null
+          scan_tier: string
+          security_score?: number | null
+          started_at?: string | null
+          status?: string
+          user_id: string
+        }
+        Update: {
+          agent_logs?: Json | null
+          completed_at?: string | null
+          created_at?: string
+          health_score?: number | null
+          id?: string
+          project_id?: string
+          reliability_score?: number | null
+          report_data?: Json | null
+          scalability_score?: number | null
+          scan_tier?: string
+          security_score?: number | null
+          started_at?: string | null
+          status?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scan_reports_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      trajectories: {
+        Row: {
+          code_changes: Json | null
+          created_at: string
+          fix_attempt_id: string
+          id: string
+          project_id: string
+          prompt: string | null
+          success: boolean
+          test_results: Json | null
+          user_id: string
+        }
+        Insert: {
+          code_changes?: Json | null
+          created_at?: string
+          fix_attempt_id: string
+          id?: string
+          project_id: string
+          prompt?: string | null
+          success?: boolean
+          test_results?: Json | null
+          user_id: string
+        }
+        Update: {
+          code_changes?: Json | null
+          created_at?: string
+          fix_attempt_id?: string
+          id?: string
+          project_id?: string
+          prompt?: string | null
+          success?: boolean
+          test_results?: Json | null
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "trajectories_fix_attempt_id_fkey"
+            columns: ["fix_attempt_id"]
+            isOneToOne: false
+            referencedRelation: "fix_attempts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "trajectories_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never

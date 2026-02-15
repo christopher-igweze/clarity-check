@@ -1,6 +1,8 @@
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
-import { Shield, Zap, GitPullRequest, ArrowRight, Terminal, Bug, Lock, TrendingUp } from "lucide-react";
+import { Shield, Zap, GitPullRequest, ArrowRight, Terminal, Bug, Lock, TrendingUp, Github } from "lucide-react";
+import { useAuth } from "@/contexts/AuthContext";
+import { useNavigate } from "react-router-dom";
 
 const steps = [
   {
@@ -39,6 +41,17 @@ const fadeUp = {
 };
 
 const Index = () => {
+  const { user, signInWithGitHub } = useAuth();
+  const navigate = useNavigate();
+
+  const handleCTA = () => {
+    if (user) {
+      navigate("/dashboard");
+    } else {
+      signInWithGitHub();
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
       {/* Grid pattern background */}
@@ -58,9 +71,16 @@ const Index = () => {
             <span className="text-foreground">2Prod</span>
           </span>
         </div>
-        <Button variant="outline" className="border-primary/30 text-primary hover:bg-primary/10">
-          Sign in with GitHub
-        </Button>
+        {user ? (
+          <Button variant="outline" className="border-primary/30 text-primary hover:bg-primary/10" onClick={() => navigate("/dashboard")}>
+            Dashboard
+          </Button>
+        ) : (
+          <Button variant="outline" className="border-primary/30 text-primary hover:bg-primary/10" onClick={signInWithGitHub}>
+            <Github className="w-4 h-4 mr-2" />
+            Sign in with GitHub
+          </Button>
+        )}
       </nav>
 
       {/* Hero */}
@@ -90,7 +110,7 @@ const Index = () => {
           </p>
 
           <motion.div variants={fadeUp} custom={1} className="flex flex-col sm:flex-row items-center justify-center gap-4">
-            <Button size="lg" className="text-base px-8 py-6 font-semibold neon-glow-green">
+            <Button size="lg" className="text-base px-8 py-6 font-semibold neon-glow-green" onClick={handleCTA}>
               Scan Your Repo Free
               <ArrowRight className="ml-2 w-5 h-5" />
             </Button>
@@ -206,7 +226,7 @@ const Index = () => {
           <p className="text-muted-foreground max-w-lg mx-auto mb-8">
             Connect your repo. Get a Production Health Score. Fix issues with verified PRs.
           </p>
-          <Button size="lg" className="text-base px-8 py-6 font-semibold neon-glow-green">
+          <Button size="lg" className="text-base px-8 py-6 font-semibold neon-glow-green" onClick={handleCTA}>
             Scan Your Repo Free
             <ArrowRight className="ml-2 w-5 h-5" />
           </Button>
