@@ -55,10 +55,9 @@ async def _run_audit(
         # Persist to Supabase
         await db.save_report(scan_id, report)
 
-        uid = UUID(user_id)
-        await db.save_findings(scan_id, project_id, uid, report.findings)
-        await db.save_action_items(scan_id, project_id, uid, report.action_items)
-        await db.save_education(scan_id, project_id, uid, report.education_cards)
+        await db.save_findings(scan_id, project_id, user_id, report.findings)
+        await db.save_action_items(scan_id, project_id, user_id, report.action_items)
+        await db.save_education(scan_id, project_id, user_id, report.education_cards)
 
     except Exception:
         logger.exception("Audit background task failed for scan %s", scan_id)
@@ -82,7 +81,7 @@ async def start_audit(
     try:
         # Resolve or create the project row so scan_reports.project_id FK is valid
         project_id = await db.get_or_create_project(
-            user_id=UUID(user_id),
+            user_id=user_id,
             repo_url=str(request_body.repo_url),
             vibe_prompt=request_body.vibe_prompt,
             project_charter=request_body.project_charter,
@@ -93,7 +92,7 @@ async def start_audit(
         await db.create_scan_report(
             scan_id=scan_id,
             project_id=project_id,
-            user_id=UUID(user_id),
+            user_id=user_id,
             scan_tier=request_body.scan_tier.value,
         )
     except Exception:

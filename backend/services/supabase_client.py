@@ -26,7 +26,7 @@ def _client() -> Client:
 
 
 async def get_or_create_project(
-    user_id: UUID,
+    user_id: str,
     repo_url: str,
     repo_name: str | None = None,
     vibe_prompt: str | None = None,
@@ -70,7 +70,7 @@ async def get_or_create_project(
 
 
 async def create_scan_report(
-    scan_id: UUID, project_id: UUID, user_id: UUID, scan_tier: str
+    scan_id: UUID, project_id: UUID, user_id: str, scan_tier: str
 ) -> UUID:
     """Insert a new scan_reports row using the caller-supplied *scan_id*.
 
@@ -122,7 +122,7 @@ async def save_report(scan_id: UUID, report: AuditReport) -> None:
 
 
 async def save_findings(
-    scan_id: UUID, project_id: UUID, user_id: UUID, findings: list[Finding]
+    scan_id: UUID, project_id: UUID, user_id: str, findings: list[Finding]
 ) -> None:
     """Bulk-insert action_items rows from Scanner findings."""
     if not findings:
@@ -152,7 +152,7 @@ async def save_findings(
 
 
 async def save_action_items(
-    scan_id: UUID, project_id: UUID, user_id: UUID, items: list[ActionItem]
+    scan_id: UUID, project_id: UUID, user_id: str, items: list[ActionItem]
 ) -> None:
     """Persist prioritised action items from the Planner.
 
@@ -188,7 +188,7 @@ async def save_action_items(
 async def save_education(
     scan_id: UUID,
     project_id: UUID,
-    user_id: UUID,
+    user_id: str,
     cards: list[EducationCard],
 ) -> None:
     """Attach education text to specific action_items rows."""
