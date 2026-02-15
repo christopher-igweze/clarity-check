@@ -11,6 +11,7 @@ import NewScan from "./pages/NewScan";
 import ScanLive from "./pages/ScanLive";
 import Report from "./pages/Report";
 import VisionIntake from "./pages/VisionIntake";
+import ProjectDetail from "./pages/ProjectDetail";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -28,6 +29,7 @@ const App = () => (
             <Route path="/scan/new" element={<ProtectedRoute><NewScan /></ProtectedRoute>} />
             <Route path="/scan/live" element={<ProtectedRoute><ScanLive /></ProtectedRoute>} />
             <Route path="/report/:id" element={<ProtectedRoute><Report /></ProtectedRoute>} />
+            <Route path="/project/:id" element={<ProtectedRoute><ProjectDetail /></ProtectedRoute>} />
             <Route path="/vision-intake" element={<ProtectedRoute><VisionIntake /></ProtectedRoute>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
