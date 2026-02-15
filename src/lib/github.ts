@@ -1,14 +1,15 @@
 import { supabase } from "@/integrations/supabase/client";
+import { getCurrentUserId } from "@/integrations/clerk/tokenStore";
 
 // Get the user's GitHub token from their profile
 async function getGitHubToken(): Promise<string | null> {
-  const { data: { user } } = await supabase.auth.getUser();
-  if (!user) return null;
+  const userId = getCurrentUserId();
+  if (!userId) return null;
 
   const { data } = await supabase
     .from("profiles")
     .select("github_access_token")
-    .eq("user_id", user.id)
+    .eq("user_id", userId)
     .single();
 
   return (data as any)?.github_access_token || null;

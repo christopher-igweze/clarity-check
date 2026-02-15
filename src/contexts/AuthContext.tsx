@@ -1,11 +1,25 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { Session, User } from "@supabase/supabase-js";
+import { createContext, useContext, useEffect, ReactNode, useMemo, useState } from "react";
+import { useAuth as useClerkAuth, useClerk, useUser } from "@clerk/clerk-react";
 import { supabase } from "@/integrations/supabase/client";
-import { lovable } from "@/integrations/lovable/index";
+import { setClerkTokenGetter, setCurrentUserId } from "@/integrations/clerk/tokenStore";
+
+const CLERK_SUPABASE_TEMPLATE = import.meta.env.VITE_CLERK_SUPABASE_TEMPLATE;
+
+type AppUserMetadata = {
+  user_name?: string;
+  avatar_url?: string;
+  full_name?: string;
+};
+
+export interface AppUser {
+  id: string;
+  email: string | null;
+  user_metadata: AppUserMetadata;
+}
 
 interface AuthContextType {
-  session: Session | null;
-  user: User | null;
+  session: null;
+  user: AppUser | null;
   loading: boolean;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
@@ -13,39 +27,105 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function mapClerkUserToAppUser(clerkUser: NonNullable<ReturnType<typeof useUser>["user"]>): AppUser {
+  return {
+    id: clerkUser.id,
+    email: clerkUser.primaryEmailAddress?.emailAddress || null,
+    user_metadata: {
+      user_name: clerkUser.username || undefined,
+      avatar_url: clerkUser.imageUrl || undefined,
+      full_name: clerkUser.fullName || undefined,
+    },
+  };
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
-  const [session, setSession] = useState<Session | null>(null);
-  const [user, setUser] = useState<User | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { isLoaded: authLoaded, getToken } = useClerkAuth();
+  const { isLoaded: userLoaded, user: clerkUser } = useUser();
+  const clerk = useClerk();
+  const [profileReady, setProfileReady] = useState(false);
+
+  const user = useMemo(() => {
+    if (!clerkUser) return null;
+    return mapClerkUserToAppUser(clerkUser);
+  }, [clerkUser]);
 
   useEffect(() => {
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      setLoading(false);
+    setClerkTokenGetter(async () => {
+      if (CLERK_SUPABASE_TEMPLATE) {
+        return getToken({ template: CLERK_SUPABASE_TEMPLATE });
+      }
+      return getToken();
     });
 
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      setLoading(false);
-    });
+    return () => {
+      setClerkTokenGetter(null);
+    };
+  }, [getToken]);
 
-    return () => subscription.unsubscribe();
-  }, []);
+  useEffect(() => {
+    setCurrentUserId(user?.id || null);
+  }, [user?.id]);
+
+  useEffect(() => {
+    let active = true;
+
+    if (!authLoaded || !userLoaded) {
+      setProfileReady(false);
+      return () => {
+        active = false;
+      };
+    }
+
+    if (!user) {
+      setProfileReady(true);
+      return () => {
+        active = false;
+      };
+    }
+
+    const ensureProfile = async () => {
+      const { error } = await supabase.from("profiles").upsert(
+        {
+          user_id: user.id,
+          display_name: user.user_metadata.full_name || user.user_metadata.user_name || null,
+          avatar_url: user.user_metadata.avatar_url || null,
+        },
+        { onConflict: "user_id", ignoreDuplicates: true },
+      );
+
+      if (error) {
+        console.error("Profile bootstrap error:", error);
+      }
+    };
+
+    ensureProfile()
+      .catch((err) => {
+        console.error("Profile bootstrap error:", err);
+      })
+      .finally(() => {
+        if (active) setProfileReady(true);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [authLoaded, userLoaded, user]);
+
+  const loading = !authLoaded || !userLoaded || !profileReady;
 
   const signInWithGoogle = async () => {
-    const { error } = await lovable.auth.signInWithOAuth("google", {
-      redirect_uri: window.location.origin,
+    await clerk.redirectToSignIn({
+      redirectUrl: "/dashboard",
     });
-    if (error) console.error("Google sign-in error:", error);
   };
+
   const signOut = async () => {
-    await supabase.auth.signOut();
+    await clerk.signOut();
   };
 
   return (
-    <AuthContext.Provider value={{ session, user, loading, signInWithGoogle, signOut }}>
+    <AuthContext.Provider value={{ session: null, user, loading, signInWithGoogle, signOut }}>
       {children}
     </AuthContext.Provider>
   );
