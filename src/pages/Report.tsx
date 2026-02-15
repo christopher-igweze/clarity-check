@@ -1,34 +1,29 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Shield, ArrowLeft, AlertTriangle, Lock, Bug, TrendingUp, Lightbulb, CheckCircle2, XCircle } from "lucide-react";
+import { Shield, ArrowLeft, AlertTriangle, Lock, Bug, TrendingUp, CheckCircle2, Circle, Clock, Wrench } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Progress } from "@/components/ui/progress";
+import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
+import { toast } from "@/hooks/use-toast";
 
-interface Finding {
-  type: string;
+interface ActionItem {
+  id: string;
   category: string;
   severity: string;
   title: string;
-  description: string;
-  file_path?: string;
-  line_number?: number;
+  description: string | null;
+  file_path: string | null;
+  line_number: number | null;
+  fix_status: string;
 }
 
 interface Summary {
-  type: string;
   health_score: number;
   security_score: number;
   reliability_score: number;
   scalability_score: number;
-  total_findings: number;
-}
-
-interface ReportData {
-  raw_response: string;
 }
 
 const severityConfig: Record<string, { color: string; label: string; emoji: string }> = {
@@ -42,6 +37,12 @@ const categoryConfig: Record<string, { icon: typeof Lock; color: string; label: 
   security: { icon: Lock, color: "text-neon-red", label: "Security" },
   reliability: { icon: Bug, color: "text-neon-orange", label: "Reliability" },
   scalability: { icon: TrendingUp, color: "text-neon-cyan", label: "Scalability" },
+};
+
+const statusConfig: Record<string, { icon: typeof Circle; label: string; next: string }> = {
+  open: { icon: Circle, label: "Open", next: "in_progress" },
+  in_progress: { icon: Clock, label: "In Progress", next: "fixed" },
+  fixed: { icon: CheckCircle2, label: "Fixed", next: "open" },
 };
 
 function ScoreGauge({ score, label, size = "lg" }: { score: number; label: string; size?: "sm" | "lg" }) {
@@ -58,19 +59,21 @@ function ScoreGauge({ score, label, size = "lg" }: { score: number; label: strin
 
   return (
     <div className="flex flex-col items-center gap-2">
-      <svg width={svgSize} height={svgSize} className="transform -rotate-90">
-        <circle cx={radius + stroke} cy={radius + stroke} r={radius} fill="none" stroke="hsl(var(--secondary))" strokeWidth={stroke} />
-        <circle
-          cx={radius + stroke} cy={radius + stroke} r={radius} fill="none"
-          stroke={scoreColor} strokeWidth={stroke}
-          strokeDasharray={circumference} strokeDashoffset={offset}
-          strokeLinecap="round"
-          className="transition-all duration-1000 ease-out"
-        />
-      </svg>
-      <div className="absolute flex flex-col items-center justify-center" style={{ width: svgSize, height: svgSize }}>
-        <span className={`font-bold ${size === "lg" ? "text-4xl" : "text-lg"}`}>{score}</span>
-        {size === "lg" && <span className="text-xs text-muted-foreground">/ 100</span>}
+      <div className="relative" style={{ width: svgSize, height: svgSize }}>
+        <svg width={svgSize} height={svgSize} className="transform -rotate-90">
+          <circle cx={radius + stroke} cy={radius + stroke} r={radius} fill="none" stroke="hsl(var(--secondary))" strokeWidth={stroke} />
+          <circle
+            cx={radius + stroke} cy={radius + stroke} r={radius} fill="none"
+            stroke={scoreColor} strokeWidth={stroke}
+            strokeDasharray={circumference} strokeDashoffset={offset}
+            strokeLinecap="round"
+            className="transition-all duration-1000 ease-out"
+          />
+        </svg>
+        <div className="absolute inset-0 flex flex-col items-center justify-center">
+          <span className={`font-bold ${size === "lg" ? "text-4xl" : "text-lg"}`}>{score}</span>
+          {size === "lg" && <span className="text-xs text-muted-foreground">/ 100</span>}
+        </div>
       </div>
       <span className={`font-medium ${size === "lg" ? "text-sm" : "text-xs"} text-muted-foreground`}>{label}</span>
     </div>
@@ -80,95 +83,85 @@ function ScoreGauge({ score, label, size = "lg" }: { score: number; label: strin
 const Report = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const [findings, setFindings] = useState<Finding[]>([]);
+  const [actionItems, setActionItems] = useState<ActionItem[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanTier, setScanTier] = useState("");
   const [repoName, setRepoName] = useState("");
+  const [filter, setFilter] = useState<"all" | "open" | "in_progress" | "fixed">("all");
 
   useEffect(() => {
     if (!id) return;
 
     const loadReport = async () => {
+      // Load report + project info
       const { data: report } = await supabase
         .from("scan_reports")
         .select("*, projects(repo_name, repo_url)")
         .eq("id", id)
         .single();
 
-      if (!report) {
-        setLoading(false);
-        return;
-      }
+      if (!report) { setLoading(false); return; }
 
       setScanTier(report.scan_tier);
       const project = report.projects as unknown as { repo_name: string; repo_url: string } | null;
       setRepoName(project?.repo_name || project?.repo_url || "Unknown");
 
-      // Use direct scores if available
       if (report.health_score) {
         setSummary({
-          type: "summary",
           health_score: report.health_score,
           security_score: report.security_score || 0,
           reliability_score: report.reliability_score || 0,
           scalability_score: report.scalability_score || 0,
-          total_findings: 0,
         });
       }
 
-      // Parse raw_response from report_data for findings
-      const reportData = report.report_data as unknown as ReportData | null;
-      if (reportData?.raw_response) {
-        const parsedFindings: Finding[] = [];
-        let parsedSummary: Summary | null = null;
-
-        for (const line of reportData.raw_response.split("\n")) {
-          const trimmed = line.trim();
-          if (!trimmed) continue;
-          try {
-            const obj = JSON.parse(trimmed);
-            if (obj.type === "finding") parsedFindings.push(obj);
-            if (obj.type === "summary") parsedSummary = obj;
-          } catch {
-            // skip non-JSON lines
-          }
-        }
-
-        setFindings(parsedFindings);
-        if (parsedSummary && !report.health_score) setSummary(parsedSummary);
-      }
-
-      // Also load action_items for this report
-      const { data: actionItems } = await supabase
+      // Load action items
+      const { data: items } = await supabase
         .from("action_items")
         .select("*")
-        .eq("scan_report_id", id);
+        .eq("scan_report_id", id)
+        .order("created_at", { ascending: true });
 
-      if (actionItems && actionItems.length > 0 && findings.length === 0) {
-        setFindings(actionItems.map((item) => ({
-          type: "finding",
-          category: item.category,
-          severity: item.severity,
-          title: item.title,
-          description: item.description || "",
-          file_path: item.file_path || undefined,
-          line_number: item.line_number || undefined,
-        })));
-      }
-
+      if (items) setActionItems(items);
       setLoading(false);
     };
 
     loadReport();
   }, [id]);
 
-  const groupedFindings = findings.reduce<Record<string, Finding[]>>((acc, f) => {
+  const toggleStatus = async (item: ActionItem) => {
+    const nextStatus = statusConfig[item.fix_status]?.next || "open";
+    const { error } = await supabase
+      .from("action_items")
+      .update({ fix_status: nextStatus })
+      .eq("id", item.id);
+
+    if (error) {
+      toast({ title: "Error", description: "Failed to update status.", variant: "destructive" });
+      return;
+    }
+
+    setActionItems((prev) =>
+      prev.map((ai) => ai.id === item.id ? { ...ai, fix_status: nextStatus } : ai)
+    );
+  };
+
+  const filteredItems = filter === "all" ? actionItems : actionItems.filter((i) => i.fix_status === filter);
+
+  const groupedFindings = filteredItems.reduce<Record<string, ActionItem[]>>((acc, f) => {
     const cat = f.category || "other";
     if (!acc[cat]) acc[cat] = [];
     acc[cat].push(f);
     return acc;
   }, {});
+
+  const counts = {
+    all: actionItems.length,
+    open: actionItems.filter((i) => i.fix_status === "open").length,
+    in_progress: actionItems.filter((i) => i.fix_status === "in_progress").length,
+    fixed: actionItems.filter((i) => i.fix_status === "fixed").length,
+  };
 
   if (loading) {
     return (
@@ -210,24 +203,34 @@ const Report = () => {
           <Card className="glass-strong mb-8">
             <CardContent className="pt-8 pb-8">
               <div className="flex flex-col md:flex-row items-center justify-around gap-8">
-                <div className="relative">
-                  <ScoreGauge score={summary.health_score} label="Health Score" size="lg" />
-                </div>
+                <ScoreGauge score={summary.health_score} label="Health Score" size="lg" />
                 <Separator orientation="vertical" className="hidden md:block h-32" />
                 <div className="grid grid-cols-3 gap-8">
-                  <div className="relative">
-                    <ScoreGauge score={summary.security_score} label="Security" size="sm" />
-                  </div>
-                  <div className="relative">
-                    <ScoreGauge score={summary.reliability_score} label="Reliability" size="sm" />
-                  </div>
-                  <div className="relative">
-                    <ScoreGauge score={summary.scalability_score} label="Scalability" size="sm" />
-                  </div>
+                  <ScoreGauge score={summary.security_score} label="Security" size="sm" />
+                  <ScoreGauge score={summary.reliability_score} label="Reliability" size="sm" />
+                  <ScoreGauge score={summary.scalability_score} label="Scalability" size="sm" />
                 </div>
               </div>
             </CardContent>
           </Card>
+        )}
+
+        {/* Fix Status Filter */}
+        {actionItems.length > 0 && (
+          <div className="flex items-center gap-2 mb-6 flex-wrap">
+            {(["all", "open", "in_progress", "fixed"] as const).map((f) => (
+              <Button
+                key={f}
+                variant={filter === f ? "default" : "outline"}
+                size="sm"
+                onClick={() => setFilter(f)}
+                className={filter === f ? "" : "border-border"}
+              >
+                {f === "all" ? "All" : statusConfig[f]?.label || f}
+                <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5">{counts[f]}</Badge>
+              </Button>
+            ))}
+          </div>
         )}
 
         {/* Findings by Category */}
@@ -244,22 +247,40 @@ const Report = () => {
               </div>
 
               <div className="space-y-3">
-                {categoryFindings.map((finding, i) => {
-                  const sev = severityConfig[finding.severity] || severityConfig.low;
+                {categoryFindings.map((item) => {
+                  const sev = severityConfig[item.severity] || severityConfig.low;
+                  const status = statusConfig[item.fix_status] || statusConfig.open;
+                  const StatusIcon = status.icon;
+
                   return (
-                    <Card key={i} className="glass hover:border-primary/20 transition-colors">
+                    <Card key={item.id} className={`glass hover:border-primary/20 transition-colors ${item.fix_status === "fixed" ? "opacity-60" : ""}`}>
                       <CardContent className="py-4 px-5">
                         <div className="flex items-start gap-3">
-                          <span className="text-lg mt-0.5">{sev.emoji}</span>
+                          <button
+                            onClick={() => toggleStatus(item)}
+                            className="mt-1 shrink-0 group"
+                            title={`Click to mark as ${status.next}`}
+                          >
+                            <StatusIcon className={`w-5 h-5 transition-colors ${
+                              item.fix_status === "fixed" ? "text-neon-green" :
+                              item.fix_status === "in_progress" ? "text-neon-orange" :
+                              "text-muted-foreground group-hover:text-primary"
+                            }`} />
+                          </button>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2 flex-wrap mb-1">
-                              <span className="font-semibold text-sm">{finding.title}</span>
+                              <span className={`font-semibold text-sm ${item.fix_status === "fixed" ? "line-through" : ""}`}>{item.title}</span>
                               <Badge className={`${sev.color} text-[10px] px-1.5 py-0`}>{sev.label}</Badge>
+                              {item.fix_status !== "open" && (
+                                <Badge variant="outline" className="text-[10px] px-1.5 py-0">{status.label}</Badge>
+                              )}
                             </div>
-                            <p className="text-sm text-muted-foreground leading-relaxed">{finding.description}</p>
-                            {finding.file_path && (
+                            {item.description && (
+                              <p className="text-sm text-muted-foreground leading-relaxed">{item.description}</p>
+                            )}
+                            {item.file_path && (
                               <p className="text-xs font-mono text-muted-foreground mt-1.5">
-                                📄 {finding.file_path}{finding.line_number ? `:${finding.line_number}` : ""}
+                                📄 {item.file_path}{item.line_number ? `:${item.line_number}` : ""}
                               </p>
                             )}
                           </div>
@@ -273,7 +294,7 @@ const Report = () => {
           );
         })}
 
-        {findings.length === 0 && !summary && (
+        {actionItems.length === 0 && !summary && (
           <Card className="glass">
             <CardContent className="py-16 text-center">
               <CheckCircle2 className="w-12 h-12 text-primary mx-auto mb-4" />
@@ -282,7 +303,7 @@ const Report = () => {
           </Card>
         )}
 
-        {findings.length === 0 && summary && (
+        {actionItems.length === 0 && summary && (
           <Card className="glass">
             <CardContent className="py-16 text-center">
               <CheckCircle2 className="w-12 h-12 text-primary mx-auto mb-4" />
