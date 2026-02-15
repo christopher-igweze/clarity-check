@@ -49,10 +49,16 @@ class SandboxManager:
     """Creates, manages, and tears down Daytona sandboxes."""
 
     def __init__(self) -> None:
+        # NOTE: If target is None, Daytona will pick the org default.
+        # Passing an unsupported target yields errors like:
+        # "Region us is not available to the organization".
+        target = settings.daytona_target or None
+        if isinstance(target, str) and not target.strip():
+            target = None
         config = DaytonaConfig(
             api_key=settings.daytona_api_key,
             api_url=settings.daytona_api_url,
-            target=settings.daytona_target,
+            target=target,
         )
         self._daytona = Daytona(config)
         self._sessions: dict[UUID, SandboxSession] = {}

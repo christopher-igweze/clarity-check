@@ -16,6 +16,9 @@ import asyncio
 import logging
 from typing import Any, Callable
 from uuid import UUID
+import shutil
+from pathlib import Path
+import subprocess
 
 from models.agent_log import AgentLogEntry, AgentName, LogLevel, SSEEventType
 from models.findings import (
@@ -88,7 +91,8 @@ class AuditOrchestrator:
 
     async def run(self) -> AuditReport:
         """Execute the full audit and return the assembled report."""
-        workspace_dir = "/home/daytona/repo"
+        local_workspace_root = Path("/tmp") / "clarity-check" / str(self.scan_id)
+        workspace_dir = str(local_workspace_root / "repo")
 
         try:
             # ---- 0. Seed context ----
@@ -102,6 +106,10 @@ class AuditOrchestrator:
             owner, repo = await parse_repo_url(self.repo_url)
             repo_info = await get_repo_info(owner, repo, self.github_token)
             clone_url = repo_info.clone_url
+
+            # Prepare a local clone for OpenHands tools (TerminalTool/FileEditorTool)
+            # Running those tools inside the API container requires a writable path.
+            await self._prepare_local_repo(local_workspace_root, clone_url, repo_info.default_branch)
 
             session = await self.sandbox_mgr.provision(self.scan_id, clone_url)
             self._log(
@@ -194,6 +202,28 @@ class AuditOrchestrator:
             # ---- 8. Teardown ----
             await self.sandbox_mgr.destroy(self.scan_id)
             self.context.clear()
+            try:
+                shutil.rmtree(local_workspace_root, ignore_errors=True)
+            except Exception:
+                logger.exception("Failed to delete local workspace %s", local_workspace_root)
+
+    @staticmethod
+    async def _prepare_local_repo(workspace_root: Path, clone_url: str, branch: str) -> None:
+        """Clone the repo into a local, writable workspace for OpenHands tools."""
+        repo_dir = workspace_root / "repo"
+
+        def _sync_clone() -> None:
+            shutil.rmtree(workspace_root, ignore_errors=True)
+            workspace_root.mkdir(parents=True, exist_ok=True)
+            # Shallow clone for speed.
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", branch, clone_url, str(repo_dir)],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+
+        await asyncio.to_thread(_sync_clone)
 
     # ------------------------------------------------------------------ #
     # Scoring

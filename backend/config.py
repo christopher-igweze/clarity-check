@@ -24,14 +24,20 @@ class Settings(BaseSettings):
     # --- Daytona (sandbox) ---
     daytona_api_key: str = Field(..., description="Daytona API key")
     daytona_api_url: str = "https://app.daytona.io/api"
-    daytona_target: str = "us"
+    # Optional. If unset, Daytona will use the account/org default target.
+    # Some organizations may not have all regions enabled (e.g. "us").
+    daytona_target: str | None = None
 
     # --- Model Selection (OpenRouter model identifiers) ---
     model_scanner: str = "google/gemini-2.5-pro"
-    model_planner: str = "anthropic/claude-sonnet-4-5-20250929"
+    model_planner: str = "anthropic/claude-sonnet-4.5"
     model_builder: str = "deepseek/deepseek-chat"
     model_security: str = "deepseek/deepseek-chat"
-    model_educator: str = "anthropic/claude-sonnet-4-5-20250929"
+    model_educator: str = "anthropic/claude-sonnet-4.5"
+
+    # --- LLM Runtime Limits ---
+    # Keep this conservative to avoid OpenRouter credit/max_token failures.
+    llm_max_output_tokens: int = 4096
 
     # --- Sandbox Limits ---
     sandbox_timeout_minutes: int = 30

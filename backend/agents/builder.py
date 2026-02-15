@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
 You are Agent_Builder, a Senior Site Reliability Engineer.  You have full
-terminal access to a cloned repository at /home/daytona/repo.
+terminal access to a cloned repository at $WORKSPACE_DIR.
 
 Your mission is to DYNAMICALLY PROBE the application — actually run it and
 see what happens.  Do not just read code; execute it.
@@ -83,7 +83,7 @@ class BuilderAgent(BaseVibe2ProdAgent):
         self._log("Starting dynamic probe — running the application...")
 
         raw_output = await self._run_conversation(
-            "Probe the repository at /home/daytona/repo. "
+            "Probe the repository at $WORKSPACE_DIR. "
             "Follow your instructions precisely."
         )
 

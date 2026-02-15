@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
 You are Agent_Planner, a Principal Software Architect.  You have full
-terminal access to a cloned repository at /home/daytona/repo.
+terminal access to a cloned repository at $WORKSPACE_DIR.
 
 You will receive:
 - Findings from Agent_Scanner (static analysis)
@@ -92,6 +92,25 @@ class PlannerAgent(BaseVibe2ProdAgent):
         raw_output = await self._run_conversation(prompt)
         action_items = self._parse_output(raw_output)
 
+        # If the planner returns empty/invalid JSON but there are findings to act on,
+        # retry with a simpler, stricter prompt containing only confirmed findings.
+        if not action_items and (scanner or builder or new_sec):
+            confirmed = self._confirmed_findings(
+                scanner=scanner,
+                builder=builder,
+                verdicts=verdicts,
+                new_sec=new_sec,
+            )
+            retry_prompt = (
+                "Return a JSON array of action items for the following CONFIRMED findings.\n"
+                "Each action item must include: title, description, category, severity, priority (1=highest), "
+                "effort (quick|moderate|significant), fix_steps (array of strings), dependencies (array), "
+                "file_path, line_number.\n\n"
+                f"Confirmed findings:\n{json.dumps(confirmed, indent=2)}"
+            )
+            raw_retry = await self._run_conversation(retry_prompt)
+            action_items = self._parse_output(raw_retry)
+
         self.context.set(
             "plan:actions",
             [a.model_dump(mode="json") for a in action_items],
@@ -114,6 +133,33 @@ class PlannerAgent(BaseVibe2ProdAgent):
         )
 
         return action_items
+
+    @staticmethod
+    def _confirmed_findings(
+        *,
+        scanner: list,
+        builder: list,
+        verdicts: list,
+        new_sec: list,
+    ) -> list:
+        """Derive confirmed findings by applying Security verdicts to upstream findings."""
+        all_findings = list(scanner or []) + list(builder or [])
+        by_id = {str(f.get("id")): f for f in all_findings if isinstance(f, dict)}
+
+        confirmed_ids = set()
+        for v in verdicts or []:
+            if not isinstance(v, dict):
+                continue
+            if v.get("confirmed") is True and v.get("finding_id") is not None:
+                confirmed_ids.add(str(v["finding_id"]))
+
+        confirmed = [by_id[i] for i in confirmed_ids if i in by_id]
+
+        # Security agent's new findings are implicitly confirmed.
+        confirmed.extend([f for f in (new_sec or []) if isinstance(f, dict)])
+
+        # If verdicts were missing/malformed, fall back to everything.
+        return confirmed or all_findings
 
     def _parse_output(self, raw: str) -> list[ActionItem]:
         cleaned = raw.strip()

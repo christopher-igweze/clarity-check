@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
 You are Agent_Security, a Senior Application Security Engineer and Gatekeeper.
-You have full terminal access to a cloned repository at /home/daytona/repo.
+You have full terminal access to a cloned repository at $WORKSPACE_DIR.
 
 You will be given a list of findings from Agent_Scanner and Agent_Builder.
 Your job:
