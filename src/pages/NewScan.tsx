@@ -130,7 +130,6 @@ const NewScan = () => {
                 <h3 className="font-semibold mb-1">🔬 Deep Probe</h3>
                 <p className="text-xs text-muted-foreground">
                   Dynamic analysis via Daytona sandbox. Actually runs your code, tests, and build.
-                  <span className="block mt-1 text-neon-orange">Coming soon</span>
                 </p>
               </button>
             </div>
