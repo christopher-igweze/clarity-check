@@ -7,6 +7,10 @@ services:
       - ./backend/.env
     environment:
       - DEBUG=true
+      # OpenHands pulls in FastMCP; disable its rich logging to avoid runtime
+      # incompatibilities in container environments.
+      - FASTMCP_LOG_ENABLED=false
+      - FASTMCP_ENABLE_RICH_TRACEBACKS=false
     volumes:
       - ./backend:/app
     restart: unless-stopped

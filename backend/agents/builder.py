@@ -7,8 +7,12 @@ Produces objective, verifiable proof of what works and what doesn't.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import subprocess
+import time
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -36,8 +40,10 @@ Steps (run each, capture exit code + output):
    — How many pass/fail?  Capture the summary.
 4. **Dependency Audit**: `npm audit --json` (or `pip-audit --format json`)
    — How many known CVEs?
-5. **Startup Test**: Try `npm run dev` or `npm start` (kill after 10s)
-   — Does the dev server boot without crashing?
+5. **Startup Test**: ONLY run a dev server using a hard timeout so the command exits.
+   - Prefer: `timeout 10s npm run dev -- --host 0.0.0.0 --port 18080`
+   - Or: `timeout 10s npm start`
+   If `timeout` exits with code 124, that's OK *as long as* you observed the server started.
 6. **Lint Check**: `npx eslint . --format json` (if configured)
    — How many warnings/errors?
 
@@ -82,12 +88,7 @@ class BuilderAgent(BaseVibe2ProdAgent):
         """Run the dynamic probe and return results + findings."""
         self._log("Starting dynamic probe — running the application...")
 
-        raw_output = await self._run_conversation(
-            "Probe the repository at $WORKSPACE_DIR. "
-            "Follow your instructions precisely."
-        )
-
-        probe_results, findings = self._parse_output(raw_output)
+        probe_results, findings = await self._run_local_probes()
 
         # Store in context
         self.context.set(
@@ -127,6 +128,194 @@ class BuilderAgent(BaseVibe2ProdAgent):
         )
 
         return probe_results, findings
+
+    async def _run_local_probes(self) -> tuple[list[ProbeResult], list[Finding]]:
+        """Execute deterministic probe steps locally (no LLM/tool-calling)."""
+        workspace = Path(self.workspace_dir)
+        if not workspace.exists():
+            return [], [
+                Finding(
+                    title="Workspace directory missing",
+                    description=f"Expected workspace at {self.workspace_dir} but it does not exist.",
+                    category=Category.reliability,
+                    severity=Severity.critical,
+                    source=FindingSource.dynamic,
+                    agent="Agent_Builder",
+                )
+            ]
+
+        # Currently only supports Node projects.
+        if not (workspace / "package.json").exists():
+            self._log(
+                "No package.json found; skipping dynamic probes.",
+                level=LogLevel.warn,
+            )
+            return [], []
+
+        async def run_cmd(
+            step: str, cmd: list[str], timeout_s: int
+        ) -> ProbeResult:
+            start = time.monotonic()
+            try:
+                proc = await asyncio.to_thread(
+                    subprocess.run,
+                    cmd,
+                    cwd=str(workspace),
+                    capture_output=True,
+                    text=True,
+                    timeout=timeout_s,
+                )
+                stdout = (proc.stdout or "")[:2000]
+                stderr = (proc.stderr or "")[:2000]
+                return ProbeResult(
+                    step=step,
+                    passed=(proc.returncode == 0),
+                    exit_code=proc.returncode,
+                    stdout=stdout,
+                    stderr=stderr,
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                )
+            except subprocess.TimeoutExpired as exc:
+                stdout = (exc.stdout or "")[:2000] if isinstance(exc.stdout, str) else ""
+                stderr = (exc.stderr or "")[:2000] if isinstance(exc.stderr, str) else ""
+                return ProbeResult(
+                    step=step,
+                    passed=False,
+                    exit_code=124,
+                    stdout=stdout,
+                    stderr=stderr,
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                )
+            except Exception as exc:
+                return ProbeResult(
+                    step=step,
+                    passed=False,
+                    exit_code=1,
+                    stdout="",
+                    stderr=str(exc)[:2000],
+                    duration_ms=int((time.monotonic() - start) * 1000),
+                )
+
+        probes: list[ProbeResult] = []
+        findings: list[Finding] = []
+
+        # 1) Install
+        install = await run_cmd("install", ["npm", "install"], timeout_s=600)
+        probes.append(install)
+        if not install.passed:
+            findings.append(
+                Finding(
+                    title="Dependency install failed",
+                    description=(
+                        "Running `npm install` failed. This blocks build/test/lint.\n\n"
+                        f"stdout (truncated):\n{install.stdout}\n\n"
+                        f"stderr (truncated):\n{install.stderr}"
+                    ),
+                    category=Category.reliability,
+                    severity=Severity.critical,
+                    source=FindingSource.dynamic,
+                    agent="Agent_Builder",
+                )
+            )
+            return probes, findings
+
+        # 2) Build
+        build = await run_cmd("build", ["npm", "run", "build"], timeout_s=600)
+        probes.append(build)
+        if not build.passed:
+            findings.append(
+                Finding(
+                    title="Build failed",
+                    description=(
+                        "Running `npm run build` failed.\n\n"
+                        f"stdout (truncated):\n{build.stdout}\n\n"
+                        f"stderr (truncated):\n{build.stderr}"
+                    ),
+                    category=Category.reliability,
+                    severity=Severity.high,
+                    source=FindingSource.dynamic,
+                    agent="Agent_Builder",
+                )
+            )
+
+        # 3) Tests
+        test = await run_cmd("test", ["npm", "test"], timeout_s=600)
+        probes.append(test)
+        if not test.passed:
+            findings.append(
+                Finding(
+                    title="Tests failing",
+                    description=(
+                        "Running `npm test` failed.\n\n"
+                        f"stdout (truncated):\n{test.stdout}\n\n"
+                        f"stderr (truncated):\n{test.stderr}"
+                    ),
+                    category=Category.reliability,
+                    severity=Severity.high,
+                    source=FindingSource.dynamic,
+                    agent="Agent_Builder",
+                )
+            )
+
+        # 4) Audit (npm exits non-zero when vulnerabilities exist)
+        audit = await run_cmd("audit", ["npm", "audit", "--json"], timeout_s=180)
+        probes.append(audit)
+        try:
+            audit_data = json.loads(audit.stdout or "{}")
+            vulns = (audit_data.get("metadata") or {}).get("vulnerabilities") or {}
+            critical = int(vulns.get("critical") or 0)
+            high = int(vulns.get("high") or 0)
+            moderate = int(vulns.get("moderate") or 0)
+            low = int(vulns.get("low") or 0)
+            total = critical + high + moderate + low
+            if total > 0:
+                sev = (
+                    Severity.critical
+                    if critical > 0
+                    else Severity.high
+                    if high > 0
+                    else Severity.medium
+                )
+                findings.append(
+                    Finding(
+                        title="Dependency vulnerabilities detected (npm audit)",
+                        description=(
+                            f"`npm audit` reports vulnerabilities: critical={critical}, high={high}, "
+                            f"moderate={moderate}, low={low}.\n\n"
+                            "Recommended next steps:\n"
+                            "- Run `npm audit fix` (and review the diff)\n"
+                            "- If fixes require breaking changes, plan upgrades intentionally\n"
+                        ),
+                        category=Category.security,
+                        severity=sev,
+                        source=FindingSource.dynamic,
+                        agent="Agent_Builder",
+                    )
+                )
+        except Exception:
+            # If audit output isn't JSON, leave probe result as-is.
+            pass
+
+        # 5) Lint (repo script)
+        lint = await run_cmd("lint", ["npm", "run", "lint"], timeout_s=600)
+        probes.append(lint)
+        if not lint.passed:
+            findings.append(
+                Finding(
+                    title="Lint errors",
+                    description=(
+                        "Running `npm run lint` failed.\n\n"
+                        f"stdout (truncated):\n{lint.stdout}\n\n"
+                        f"stderr (truncated):\n{lint.stderr}"
+                    ),
+                    category=Category.reliability,
+                    severity=Severity.medium,
+                    source=FindingSource.dynamic,
+                    agent="Agent_Builder",
+                )
+            )
+
+        return probes, findings
 
     def _parse_output(
         self, raw: str
