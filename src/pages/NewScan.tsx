@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { Shield, ArrowRight, GitBranch, Zap, Microscope, MessageSquare } from "lucide-react";
+import { Shield, ArrowRight, Zap, Microscope, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "@/hooks/use-toast";
+import { RepoSelector } from "@/components/RepoSelector";
 
 const NewScan = () => {
   const { user } = useAuth();
@@ -80,18 +80,7 @@ const NewScan = () => {
         <p className="text-muted-foreground mb-8">Connect your repo and choose a scan depth.</p>
 
         <div className="space-y-6">
-          <div>
-            <label className="text-sm font-medium mb-2 block">GitHub Repository URL</label>
-            <div className="relative">
-              <GitBranch className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-              <Input
-                value={repoUrl}
-                onChange={(e) => setRepoUrl(e.target.value)}
-                placeholder="https://github.com/user/repo"
-                className="pl-10 bg-secondary border-border"
-              />
-            </div>
-          </div>
+          <RepoSelector value={repoUrl} onChange={setRepoUrl} />
 
           <div>
             <label className="text-sm font-medium mb-2 block">
