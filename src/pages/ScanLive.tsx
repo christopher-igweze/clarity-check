@@ -3,15 +3,25 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { Shield, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { fetchRepoContents } from "@/lib/github";
-import { streamSurfaceScan, callSecurityReview } from "@/lib/api";
+import { streamSurfaceScan, callSecurityReview, streamDeepProbe } from "@/lib/api";
 import { supabase } from "@/integrations/supabase/client";
 import { useAuth } from "@/contexts/AuthContext";
 
 interface LogEntry {
   agent: string;
   message: string;
-  type: "log" | "finding" | "summary" | "error" | "system";
+  type: "log" | "finding" | "summary" | "error" | "system" | "probe";
   color: string;
+}
+
+interface DeepProbeResults {
+  install_ok?: boolean;
+  build_ok?: boolean;
+  tests_ok?: boolean;
+  tests_passed?: number | null;
+  tests_failed?: number | null;
+  audit_vulnerabilities?: number;
+  results?: Record<string, unknown>;
 }
 
 const agentColors: Record<string, string> = {
@@ -41,6 +51,7 @@ const ScanLive = () => {
   const [reportId, setReportId] = useState<string | null>(null);
   const collectedFindings = useRef<Array<{ category: string; severity: string; title: string; description: string; file_path?: string; line_number?: number }>>([]);
   const collectedSummary = useRef<{ health_score: number; security_score: number; reliability_score: number; scalability_score: number } | null>(null);
+  const deepProbeResults = useRef<DeepProbeResults | null>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
 
   const addLog = (entry: LogEntry) => {
@@ -82,7 +93,64 @@ const ScanLive = () => {
         if (reportError) throw reportError;
         setReportId(report.id);
 
-        // Step 3: Start surface scan
+        // Step 3: Run deep probe if tier is "deep"
+        if (state.tier === "deep") {
+          setStatus("scanning");
+          addLog({ agent: "Agent_SRE", message: "Starting Tier 2 Deep Probe via Daytona sandbox...", type: "probe", color: "text-neon-orange" });
+
+          await new Promise<void>((resolve, reject) => {
+            streamDeepProbe({
+              repoUrl: state.repoUrl,
+              onEvent: (event) => {
+                if (event.type === "probe_step") {
+                  addLog({
+                    agent: "Agent_SRE",
+                    message: `🔬 ${event.message || event.step} [${event.status}]`,
+                    type: "probe",
+                    color: "text-neon-orange",
+                  });
+                } else if (event.type === "probe_result") {
+                  const icon = event.exit_code === 0 ? "✅" : "❌";
+                  const duration = event.duration_ms ? ` (${(event.duration_ms / 1000).toFixed(1)}s)` : "";
+                  addLog({
+                    agent: "Agent_SRE",
+                    message: `${icon} ${event.step}: exit ${event.exit_code}${duration}`,
+                    type: "probe",
+                    color: event.exit_code === 0 ? "text-neon-green" : "text-neon-red",
+                  });
+                  // Show truncated stdout for failures
+                  if (event.exit_code !== 0 && event.stdout) {
+                    const preview = event.stdout.slice(0, 200);
+                    addLog({ agent: "Agent_SRE", message: `   └─ ${preview}`, type: "probe", color: "text-muted-foreground" });
+                  }
+                } else if (event.type === "probe_summary") {
+                  deepProbeResults.current = {
+                    install_ok: event.install_ok,
+                    build_ok: event.build_ok,
+                    tests_ok: event.tests_ok,
+                    tests_passed: event.tests_passed,
+                    tests_failed: event.tests_failed,
+                    audit_vulnerabilities: event.audit_vulnerabilities,
+                    results: event.results as Record<string, unknown>,
+                  };
+                  addLog({
+                    agent: "Agent_SRE",
+                    message: `🔬 Deep Probe Summary: Install ${event.install_ok ? "✅" : "❌"} | Build ${event.build_ok ? "✅" : "❌"} | Tests ${event.tests_ok ? "✅" : "❌"} | Audit vulns: ${event.audit_vulnerabilities || 0}`,
+                    type: "summary",
+                    color: "text-neon-orange",
+                  });
+                } else if (event.type === "probe_error") {
+                  addLog({ agent: "Agent_SRE", message: `❌ ${event.message}`, type: "error", color: "text-neon-red" });
+                }
+              },
+              onDone: () => resolve(),
+            }).catch(reject);
+          });
+
+          addLog({ agent: "System", message: "Deep probe complete. Starting surface scan...", type: "system", color: "text-primary" });
+        }
+
+        // Step 4: Start surface scan
         setStatus("scanning");
         addLog({ agent: "Agent_Scanner", message: "Starting Tier 1 Surface Scan via Gemini 3 Pro...", type: "log", color: "text-neon-green" });
 
@@ -171,7 +239,7 @@ const ScanLive = () => {
               .update({
                 status: "reviewing",
                 completed_at: new Date().toISOString(),
-                report_data: { raw_response: fullResponse },
+                report_data: { raw_response: fullResponse, deep_probe: deepProbeResults.current ? JSON.parse(JSON.stringify(deepProbeResults.current)) : undefined } as any,
                 ...(summary ? {
                   health_score: summary.health_score,
                   security_score: summary.security_score,

@@ -1,1 +1,4 @@
 project_id = "fpdroxgvvitbhcjjycki"
+
+[functions.deep-probe]
+verify_jwt = false

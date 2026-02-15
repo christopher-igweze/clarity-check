@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Shield, ArrowLeft, AlertTriangle, Lock, Bug, TrendingUp, CheckCircle2, Circle, Clock, RefreshCw, Lightbulb, Briefcase, ShieldCheck, ShieldAlert, ShieldX } from "lucide-react";
+import { Shield, ArrowLeft, AlertTriangle, Lock, Bug, TrendingUp, CheckCircle2, Circle, Clock, RefreshCw, Lightbulb, Briefcase, ShieldCheck, ShieldAlert, ShieldX, Terminal, XCircle } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -90,6 +90,7 @@ const Report = () => {
   const [actionItems, setActionItems] = useState<ActionItem[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [securityReview, setSecurityReview] = useState<any>(null);
+  const [deepProbe, setDeepProbe] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [scanTier, setScanTier] = useState("");
   const [repoName, setRepoName] = useState("");
@@ -116,6 +117,8 @@ const Report = () => {
       setScanTier(report.scan_tier);
       setProjectId(report.project_id);
       setSecurityReview((report as any).security_review || null);
+      const reportData = (report as any).report_data as any;
+      setDeepProbe(reportData?.deep_probe || null);
       const project = report.projects as unknown as { repo_name: string; repo_url: string } | null;
       setRepoName(project?.repo_name || project?.repo_url || "Unknown");
       setRepoUrl(project?.repo_url || "");
@@ -315,6 +318,55 @@ const Report = () => {
                   <ScoreGauge score={summary.scalability_score} label="Scalability" size="sm" />
                 </div>
               </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Deep Probe Results */}
+        {deepProbe && (
+          <Card className="glass-strong mb-8 border-neon-orange/20">
+            <CardContent className="pt-6 pb-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-lg bg-neon-orange/10 flex items-center justify-center">
+                  <Terminal className="w-5 h-5 text-neon-orange" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold">Deep Probe Results</h2>
+                  <p className="text-xs text-muted-foreground">Agent_SRE • Daytona Sandbox</p>
+                </div>
+                <Badge className="ml-auto bg-neon-orange/20 text-neon-orange border-neon-orange/30 text-[10px]">Dynamic</Badge>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                {[
+                  { label: "Install", ok: deepProbe.install_ok },
+                  { label: "Build", ok: deepProbe.build_ok },
+                  { label: "Tests", ok: deepProbe.tests_ok },
+                  { label: "Audit", ok: (deepProbe.audit_vulnerabilities || 0) === 0 },
+                ].map((item) => (
+                  <div key={item.label} className={`rounded-lg p-3 text-center ${item.ok ? "bg-neon-green/10 border border-neon-green/20" : "bg-neon-red/10 border border-neon-red/20"}`}>
+                    {item.ok ? (
+                      <CheckCircle2 className="w-6 h-6 mx-auto mb-1 text-neon-green" />
+                    ) : (
+                      <XCircle className="w-6 h-6 mx-auto mb-1 text-neon-red" />
+                    )}
+                    <span className="text-xs font-semibold">{item.label}</span>
+                  </div>
+                ))}
+              </div>
+
+              {(deepProbe.tests_passed !== null || deepProbe.tests_failed !== null) && (
+                <div className="flex items-center gap-4 text-xs text-muted-foreground mb-3">
+                  {deepProbe.tests_passed !== null && <span className="text-neon-green">✅ {deepProbe.tests_passed} passed</span>}
+                  {deepProbe.tests_failed !== null && deepProbe.tests_failed > 0 && <span className="text-neon-red">❌ {deepProbe.tests_failed} failed</span>}
+                </div>
+              )}
+
+              {deepProbe.audit_vulnerabilities > 0 && (
+                <div className="text-xs p-2 rounded bg-neon-orange/5 border border-neon-orange/10">
+                  <span className="font-semibold text-neon-orange">⚠️ npm audit:</span> {deepProbe.audit_vulnerabilities} vulnerabilities found
+                </div>
+              )}
             </CardContent>
           </Card>
         )}

@@ -115,6 +115,87 @@ export async function callSecurityReview({
   return resp.json();
 }
 
+export type DeepProbeCallback = (event: {
+  type: string;
+  step?: string;
+  status?: string;
+  agent?: string;
+  message?: string;
+  exit_code?: number;
+  stdout?: string;
+  stderr?: string;
+  duration_ms?: number;
+  install_ok?: boolean;
+  build_ok?: boolean;
+  tests_ok?: boolean;
+  tests_passed?: number | null;
+  tests_failed?: number | null;
+  audit_vulnerabilities?: number;
+  results?: Record<string, unknown>;
+}) => void;
+
+export async function streamDeepProbe({
+  repoUrl,
+  githubToken,
+  onEvent,
+  onDone,
+}: {
+  repoUrl: string;
+  githubToken?: string;
+  onEvent: DeepProbeCallback;
+  onDone: () => void;
+}) {
+  const resp = await fetch(`${FUNCTIONS_URL}/deep-probe`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+    },
+    body: JSON.stringify({ repoUrl, githubToken }),
+  });
+
+  if (!resp.ok || !resp.body) {
+    const err = await resp.text();
+    throw new Error(err || "Failed to start deep probe");
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let newlineIndex: number;
+    while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
+      let line = buffer.slice(0, newlineIndex);
+      buffer = buffer.slice(newlineIndex + 1);
+
+      if (line.endsWith("\r")) line = line.slice(0, -1);
+      if (line.startsWith(":") || line.trim() === "") continue;
+      if (!line.startsWith("data: ")) continue;
+
+      const jsonStr = line.slice(6).trim();
+      if (jsonStr === "[DONE]") {
+        onDone();
+        return;
+      }
+
+      try {
+        const parsed = JSON.parse(jsonStr);
+        onEvent(parsed);
+      } catch {
+        buffer = line + "\n" + buffer;
+        break;
+      }
+    }
+  }
+
+  onDone();
+}
+
 export async function streamVisionIntake({
   messages,
   repoUrl,
