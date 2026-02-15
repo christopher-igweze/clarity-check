@@ -136,15 +136,27 @@ const NewScan = () => {
             </div>
           </div>
 
-          <Button
-            onClick={handleStartScan}
-            disabled={!repoUrl.trim() || loading}
-            size="lg"
-            className="w-full neon-glow-green text-base font-semibold"
-          >
-            {loading ? "Creating project..." : "Start Scan"}
-            <ArrowRight className="ml-2 w-5 h-5" />
-          </Button>
+          <div className="flex flex-col sm:flex-row gap-3">
+            <Button
+              onClick={handleStartScan}
+              disabled={!repoUrl.trim() || loading}
+              size="lg"
+              className="flex-1 neon-glow-green text-base font-semibold"
+            >
+              {loading ? "Creating project..." : "Start Scan"}
+              <ArrowRight className="ml-2 w-5 h-5" />
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => navigate("/vision-intake", { state: { repoUrl: repoUrl.trim(), vibePrompt } })}
+              disabled={!repoUrl.trim()}
+              size="lg"
+              className="border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/10"
+            >
+              <MessageSquare className="mr-2 w-5 h-5" />
+              Vision Intake First
+            </Button>
+          </div>
         </div>
       </main>
     </div>

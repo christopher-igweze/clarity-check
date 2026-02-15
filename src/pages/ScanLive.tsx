@@ -39,6 +39,8 @@ const ScanLive = () => {
   const [status, setStatus] = useState<"fetching" | "scanning" | "completed" | "error">("fetching");
   const [rawContent, setRawContent] = useState("");
   const [reportId, setReportId] = useState<string | null>(null);
+  const collectedFindings = useRef<Array<{ category: string; severity: string; title: string; description: string; file_path?: string; line_number?: number }>>([]);
+  const collectedSummary = useRef<{ health_score: number; security_score: number; reliability_score: number; scalability_score: number } | null>(null);
   const terminalRef = useRef<HTMLDivElement>(null);
 
   const addLog = (entry: LogEntry) => {
@@ -109,6 +111,15 @@ const ScanLive = () => {
                     color: agentColors[parsed.agent] || "text-neon-green",
                   });
                 } else if (parsed.type === "finding") {
+                  collectedFindings.current.push({
+                    category: parsed.category || "security",
+                    severity: parsed.severity,
+                    title: parsed.title,
+                    description: parsed.description || "",
+                    file_path: parsed.file_path,
+                    line_number: parsed.line_number,
+                  });
+
                   const severityEmoji = {
                     critical: "🔴",
                     high: "🟠",
@@ -123,6 +134,12 @@ const ScanLive = () => {
                     color: parsed.severity === "critical" ? "text-neon-red" : "text-neon-orange",
                   });
                 } else if (parsed.type === "summary") {
+                  collectedSummary.current = {
+                    health_score: parsed.health_score,
+                    security_score: parsed.security_score,
+                    reliability_score: parsed.reliability_score,
+                    scalability_score: parsed.scalability_score,
+                  };
                   addLog({
                     agent: "Agent_Scanner",
                     message: `Scan complete. Health Score: ${parsed.health_score}/100 | Security: ${parsed.security_score} | Reliability: ${parsed.reliability_score} | Scalability: ${parsed.scalability_score}`,
@@ -147,15 +164,50 @@ const ScanLive = () => {
             setStatus("completed");
             addLog({ agent: "System", message: "Scan completed successfully.", type: "system", color: "text-primary" });
 
-            // Update report status
+            const summary = collectedSummary.current;
+
+            // Update report with scores
             await supabase
               .from("scan_reports")
               .update({
                 status: "completed",
                 completed_at: new Date().toISOString(),
                 report_data: { raw_response: fullResponse },
+                ...(summary ? {
+                  health_score: summary.health_score,
+                  security_score: summary.security_score,
+                  reliability_score: summary.reliability_score,
+                  scalability_score: summary.scalability_score,
+                } : {}),
               })
               .eq("id", report.id);
+
+            // Update project health score
+            if (summary) {
+              await supabase
+                .from("projects")
+                .update({
+                  latest_health_score: summary.health_score,
+                  scan_count: (await supabase.from("projects").select("scan_count").eq("id", state.projectId).single()).data?.scan_count! + 1,
+                })
+                .eq("id", state.projectId);
+            }
+
+            // Persist findings as action_items
+            if (collectedFindings.current.length > 0 && user) {
+              const items = collectedFindings.current.map((f) => ({
+                project_id: state.projectId,
+                scan_report_id: report.id,
+                user_id: user.id,
+                category: f.category,
+                severity: f.severity,
+                title: f.title,
+                description: f.description,
+                file_path: f.file_path || null,
+                line_number: f.line_number || null,
+              }));
+              await supabase.from("action_items").insert(items);
+            }
           },
         });
       } catch (err) {
