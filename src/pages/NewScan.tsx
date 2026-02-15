@@ -1,10 +1,12 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { Shield, ArrowRight, GitBranch, Zap, Microscope } from "lucide-react";
+import { Shield, ArrowRight, GitBranch, Zap, Microscope, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "@/hooks/use-toast";
 
 const NewScan = () => {
   const { user } = useAuth();
@@ -12,11 +14,51 @@ const NewScan = () => {
   const [repoUrl, setRepoUrl] = useState("");
   const [vibePrompt, setVibePrompt] = useState("");
   const [tier, setTier] = useState<"surface" | "deep">("surface");
+  const [loading, setLoading] = useState(false);
 
-  const handleStartScan = () => {
-    if (!repoUrl.trim()) return;
-    // TODO: Create project + scan, navigate to scanning view
-    navigate("/scan/live");
+  const handleStartScan = async () => {
+    if (!repoUrl.trim() || !user) return;
+    setLoading(true);
+
+    try {
+      // Extract repo name
+      const match = repoUrl.match(/github\.com\/([^/]+)\/([^/]+)/);
+      const repoName = match ? `${match[1]}/${match[2].replace(/\.git$/, "")}` : repoUrl;
+
+      // Create project in DB
+      const { data: project, error } = await supabase
+        .from("projects")
+        .insert({
+          user_id: user.id,
+          repo_url: repoUrl.trim(),
+          repo_name: repoName,
+          vibe_prompt: vibePrompt || null,
+          latest_scan_tier: tier,
+        })
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      // Navigate to scan view with state
+      navigate("/scan/live", {
+        state: {
+          projectId: project.id,
+          repoUrl: repoUrl.trim(),
+          vibePrompt,
+          tier,
+        },
+      });
+    } catch (err) {
+      console.error(err);
+      toast({
+        title: "Error",
+        description: "Failed to create project. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -38,7 +80,6 @@ const NewScan = () => {
         <p className="text-muted-foreground mb-8">Connect your repo and choose a scan depth.</p>
 
         <div className="space-y-6">
-          {/* Repo URL */}
           <div>
             <label className="text-sm font-medium mb-2 block">GitHub Repository URL</label>
             <div className="relative">
@@ -52,7 +93,6 @@ const NewScan = () => {
             </div>
           </div>
 
-          {/* Vibe Prompt */}
           <div>
             <label className="text-sm font-medium mb-2 block">
               Vibe Prompt <span className="text-muted-foreground">(optional)</span>
@@ -65,7 +105,6 @@ const NewScan = () => {
             />
           </div>
 
-          {/* Tier Selection */}
           <div>
             <label className="text-sm font-medium mb-3 block">Scan Tier</label>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
@@ -91,6 +130,7 @@ const NewScan = () => {
                 <h3 className="font-semibold mb-1">🔬 Deep Probe</h3>
                 <p className="text-xs text-muted-foreground">
                   Dynamic analysis via Daytona sandbox. Actually runs your code, tests, and build.
+                  <span className="block mt-1 text-neon-orange">Coming soon</span>
                 </p>
               </button>
             </div>
@@ -98,11 +138,11 @@ const NewScan = () => {
 
           <Button
             onClick={handleStartScan}
-            disabled={!repoUrl.trim()}
+            disabled={!repoUrl.trim() || loading}
             size="lg"
             className="w-full neon-glow-green text-base font-semibold"
           >
-            Start Scan
+            {loading ? "Creating project..." : "Start Scan"}
             <ArrowRight className="ml-2 w-5 h-5" />
           </Button>
         </div>
