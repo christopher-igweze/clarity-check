@@ -1,5 +1,5 @@
 import { useAuth } from "@/contexts/AuthContext";
-import { Shield, LogOut, FolderGit2, Plus, ExternalLink, Clock, BarChart3 } from "lucide-react";
+import { Shield, LogOut, FolderGit2, Plus, ExternalLink, Clock, BarChart3, Settings } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -86,6 +86,9 @@ const Dashboard = () => {
             )}
             <span className="text-sm text-muted-foreground">{githubUsername}</span>
           </div>
+          <Button variant="ghost" size="icon" onClick={() => navigate("/settings")}>
+            <Settings className="w-4 h-4" />
+          </Button>
           <Button variant="ghost" size="icon" onClick={signOut}>
             <LogOut className="w-4 h-4" />
           </Button>
