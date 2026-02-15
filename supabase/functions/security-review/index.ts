@@ -70,7 +70,7 @@ serve(async (req) => {
         "X-Title": "Vibe2Prod Security Review",
       },
       body: JSON.stringify({
-        model: "deepseek/deepseek-reasoner",
+        model: "deepseek/deepseek-chat",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: userMessage },
