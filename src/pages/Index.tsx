@@ -1,6 +1,6 @@
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
-import { Shield, Zap, GitPullRequest, ArrowRight, Terminal, Bug, Lock, TrendingUp, Github } from "lucide-react";
+import { Shield, Zap, GitPullRequest, ArrowRight, Terminal, Bug, Lock, TrendingUp } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useNavigate } from "react-router-dom";
 
@@ -41,14 +41,14 @@ const fadeUp = {
 };
 
 const Index = () => {
-  const { user, signInWithGitHub } = useAuth();
+  const { user, signInWithGoogle } = useAuth();
   const navigate = useNavigate();
 
   const handleCTA = () => {
     if (user) {
       navigate("/dashboard");
     } else {
-      signInWithGitHub();
+      signInWithGoogle();
     }
   };
 
@@ -76,9 +76,8 @@ const Index = () => {
             Dashboard
           </Button>
         ) : (
-          <Button variant="outline" className="border-primary/30 text-primary hover:bg-primary/10" onClick={signInWithGitHub}>
-            <Github className="w-4 h-4 mr-2" />
-            Sign in with GitHub
+          <Button variant="outline" className="border-primary/30 text-primary hover:bg-primary/10" onClick={signInWithGoogle}>
+            Sign in with Google
           </Button>
         )}
       </nav>
