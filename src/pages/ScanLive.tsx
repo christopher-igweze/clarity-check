@@ -15,10 +15,11 @@ interface LogEntry {
 }
 
 const agentColors: Record<string, string> = {
-  Agent_Scanner: "text-neon-green",
+  Agent_Auditor: "text-neon-green",
   Agent_Visionary: "text-neon-cyan",
-  Agent_Planner: "text-neon-purple",
-  Agent_Builder: "text-neon-orange",
+  Agent_Architect: "text-neon-purple",
+  Agent_SRE: "text-neon-orange",
+  Agent_Security: "text-neon-red",
   Agent_Educator: "text-primary",
   System: "text-muted-foreground",
 };
