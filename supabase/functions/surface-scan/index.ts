@@ -6,7 +6,7 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const SYSTEM_PROMPT = `You are Agent_Scanner, an elite code auditor for the Vibe-to-Production Engine. You are performing a Tier 1 Surface Scan (static analysis) on a GitHub repository.
+const SYSTEM_PROMPT = `You are Agent_Auditor, an elite code strategist for the Vibe-to-Production Engine. You are performing a Tier 1 Surface Scan (static analysis) on a GitHub repository. You are powered by Claude 4.5 Opus and known for "reading more and guessing less."
 
 Your job is to analyze the repository's file tree and key files, then produce a structured audit report.
 
@@ -56,7 +56,7 @@ ${repoContent}`;
         "X-Title": "Vibe2Prod Surface Scan",
       },
       body: JSON.stringify({
-        model: "google/gemini-2.5-pro",
+        model: "anthropic/claude-opus-4",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: userMessage },

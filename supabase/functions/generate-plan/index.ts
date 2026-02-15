@@ -6,7 +6,7 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-const SYSTEM_PROMPT = `You are Agent_Planner, a senior software architect for the Vibe-to-Production Engine. You receive the raw scan findings from Agent_Scanner and must generate a prioritized action plan.
+const SYSTEM_PROMPT = `You are Agent_Architect, the senior planner for the Vibe-to-Production Engine. You are powered by GPT-5.2 (xhigh/Codex), chosen for your 100% AIME reasoning score. You receive the raw scan findings from Agent_Auditor and must design the refactoring blueprint — a prioritized action plan.
 
 For each finding, create a "mission" with:
 - Priority: critical (🔴), high (🟠), medium (🟡), low (🟢)
@@ -50,7 +50,7 @@ serve(async (req) => {
         "X-Title": "Vibe2Prod Action Plan",
       },
       body: JSON.stringify({
-        model: "anthropic/claude-sonnet-4",
+        model: "openai/gpt-5.2",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: userMessage },

@@ -1,7 +1,7 @@
 
 
 # Vibe-to-Production: The Anti-Rewrite Engine MVP
-## Full Agent Swarm — Phases, Models & OpenRouter Integration
+## Full Agent Swarm — 6 Agents, Phases & OpenRouter Integration
 
 ---
 
@@ -16,15 +16,16 @@
 
 ---
 
-## The Agent Swarm (Merged Roster — 5 Agents)
+## The Agent Swarm (6 Agents)
 
-| Agent | Role | Model (via OpenRouter) | When Used |
-|---|---|---|---|
-| **Agent_Visionary** | Product Manager | Gemini 3 Pro (10M context) | Phase 0 — Intake. Ingests repo + user's "vibe prompt" to generate a `project_charter.md` so agents understand intent before auditing |
-| **Agent_Scanner** | The Auditor | Gemini 3 Pro | Phase 1 — Deep Scan. Reads entire repo in one pass (2M+ context), runs static analysis, identifies security/architecture/reliability issues |
-| **Agent_Planner** | The Architect | Claude 4.5 Opus | Phase 2 — Action Plan. Reviews scan findings, designs safe refactoring strategy, prioritizes missions without breaking business logic |
-| **Agent_Builder** | The SRE | DeepSeek V3.2 | Phase 3 — Auto-Fix. Enters Daytona sandbox, writes code fixes, installs packages, writes tests, self-corrects in a loop. 10x cheaper for heavy lifting |
-| **Agent_Educator** | The Teacher | Claude 4.5 Sonnet | All Phases — Education Layer. Generates plain-English "Why This Matters" and "The CTO's Perspective" cards for every finding |
+| Agent | Role | Model (via OpenRouter) | OpenRouter Model ID | Key Feature | When Used |
+|---|---|---|---|---|---|
+| **Agent_Visionary** | Product Manager | Gemini 3 Pro | `google/gemini-2.5-pro` | 10M token context | Phase 0 — Intake. Ingests repo + user's "vibe prompt" to generate `project_charter.md` so agents understand intent before auditing |
+| **Agent_Auditor** | The Strategist | Claude 4.5 Opus | `anthropic/claude-opus-4` | 80.9% SWE-bench | Phase 1 — Deep Scan. Reads entire repo, hunts spaghetti code, circular deps, architectural risks. Diagnoses but doesn't fix |
+| **Agent_Architect** | The Planner | GPT-5.2 (xhigh/Codex) | `openai/gpt-5.2` | 100% AIME reasoning | Phase 2 — Action Plan. Takes Auditor's report and designs modular refactoring blueprints. Decides exactly which files change |
+| **Agent_SRE** | Site Reliability Engineer | DeepSeek V3.2 | `deepseek/deepseek-chat` | $0.28/1M tokens | Phase 3 — Auto-Fix. Executes Architect's plan in Daytona sandbox via OpenHands SDK. Writes code, runs tests, self-corrects in loops |
+| **Agent_Security** | The Gatekeeper | DeepSeek V3.2 (Reasoner) | `deepseek/deepseek-reasoner` | Logic/cost ratio | All Phases — Reviews every line the SRE writes. Checks hardcoded secrets, SQL injection, SOC 2 compliance. Has VETO power |
+| **Agent_Educator** | The Teacher | Claude 4.5 Sonnet | `anthropic/claude-sonnet-4` | Human-like writing | All Phases — Translates technical findings into "Why This Matters" and "The CTO's Perspective" cards |
 
 ---
 
@@ -40,8 +41,9 @@
 **Two Tiers:**
 
 **Tier 1 — Surface Scan (Static Analysis)**
-- **Agent_Scanner** (Gemini 3 Pro) ingests the full file tree + critical files in one massive context pass
+- **Agent_Auditor** (Claude 4.5 Opus) ingests the full file tree + critical files
 - Runs heuristic checks: hardcoded secrets, `.env` in git, missing test folders, circular dependencies, `sk_live` keys
+- **Agent_Security** (DeepSeek V3.2 Reasoner) validates findings for false positives
 - Cost: ~$0.10-0.20 | Speed: ~15 seconds
 - No Daytona needed
 
@@ -56,24 +58,28 @@
 **Output:** Production Health Score (0-100) across Security, Scalability, Reliability
 
 ### Phase 2: The Action Plan (Architecture)
-- **Agent_Planner** (Claude 4.5 Opus) reviews all Phase 1 findings
+- **Agent_Architect** (GPT-5.2 xhigh/Codex) reviews all Phase 1 findings
 - Generates a prioritized mission list:
   - 🔴 Critical: "Move Stripe Secret Key to Env Var"
   - 🟠 High: "Implement Connection Pooling for Supabase"
   - 🟡 Medium: "Add Rate Limiting to API Routes"
 - Each mission includes the specific files, the risk, and the recommended approach
+- **Agent_Security** reviews the plan for security implications
 - **Agent_Educator** (Claude 4.5 Sonnet) generates a "Why This Matters" and "The CTO's Perspective" card for every item
 
 ### Phase 3: The Auto-Fix (Revenue Feature)
 - User clicks "Fix This" on any action item
-- **Agent_Builder** (DeepSeek V3.2) enters a Daytona sandbox via OpenHands SDK:
+- **Agent_SRE** (DeepSeek V3.2) enters a Daytona sandbox via OpenHands SDK:
   1. Clones the repo into the sandbox
   2. Edits code, installs libraries (e.g., `npm install express-rate-limit`)
   3. Writes a unit test for the fix
   4. Runs the test — if it fails, self-corrects (loop)
-  5. On success: creates a PR on the user's GitHub with a detailed description
+- **Agent_Security** (DeepSeek V3.2 Reasoner) reviews every code change before PR:
+  - Checks for introduced vulnerabilities, hardcoded secrets, SQL injection
+  - Has VETO power — can reject and send back to SRE for correction
+  5. On success + security approval: creates a PR on the user's GitHub with a detailed description
 - Diff preview shown in a code comparison view before committing
-- **Token Efficiency:** Uses "Variable Passing" — when Scanner finds a file, it saves it as `$file_context` and passes to subsequent agents instead of re-reading
+- **Token Efficiency:** Uses "Variable Passing" — when Auditor finds a file, it saves it as `$file_context` and passes to subsequent agents instead of re-reading
 
 ---
 
@@ -97,7 +103,8 @@
 
 ### 4. Live Scanning View ("The Thinking Stream")
 - Terminal-style log window showing raw agent activity
-- Real-time streaming: `> Agent_Scanner: Analyzing package.json...`, `> SRE_Agent: Running 'npm test'... Failed. Retrying...`
+- Real-time streaming: `> Agent_Auditor: Analyzing package.json...`, `> Agent_SRE: Running 'npm test'... Failed. Retrying...`
+- Agent_Security logs shown with 🛡️ prefix
 - Progress stages with time estimates
 - Builds trust by visualizing the work
 
@@ -105,20 +112,24 @@
 - **Health Score Gauge** — circular 0-100 (red/yellow/green)
 - **Scan Tier Badge** — Surface vs Deep Probe
 - **Three Category Sections:** Security 🔴, Reliability 🟡, Scalability 🔵
+- **Security Officer Verdict** — separate section showing Agent_Security's review
 - **Deep Probe Exclusive Findings** highlighted separately (build failures, crash logs, test results)
 - **Action Items** — each card shows:
   - File path + line reference
   - Severity badge (Critical / High / Medium / Low)
   - Source badge: "Static" or "Dynamic"
+  - Security review status (✅ Approved / ⚠️ Flagged by Security Officer)
   - "Why This Matters" educational card (Agent_Educator)
   - "The CTO's Perspective" business risk explanation
   - **"Fix This" button**
 
 ### 6. Auto-Fixer Modal
 - Diff preview of proposed fix
-- Confirm → live terminal showing Agent_Builder executing in Daytona sandbox
+- **Security Review Gate** — Agent_Security must approve before PR creation
+- Confirm → live terminal showing Agent_SRE executing in Daytona sandbox
 - Verification results (tests pass/fail)
-- "Create PR" button on success
+- Security scan results (pass/veto)
+- "Create PR" button on success + security approval
 
 ### 7. My Projects Dashboard
 - Previously scanned repos with health scores
@@ -134,17 +145,18 @@
 - **profiles** — GitHub user info, avatar, access token
 - **projects** — repo URL, project charter, latest health score, scan tier
 - **scan_reports** — full structured JSON report, tier, timestamps
-- **action_items** — issues with severity, category, file path, source (static/dynamic), fix status
-- **fix_attempts** — execution log with sandbox ID, status, PR URL, agent logs
+- **action_items** — issues with severity, category, file path, source (static/dynamic), fix status, security_status
+- **fix_attempts** — execution log with sandbox ID, status, PR URL, agent logs, security_review
 - **trajectories** — successful fix trajectories (prompt → code → test pass) for future fine-tuning
 
 ### Supabase Edge Functions
-- **vision-intake** — Calls OpenRouter (Gemini 3 Pro) to run the Visionary agent chat
-- **surface-scan** — Calls OpenRouter (Gemini 3 Pro) for static analysis, streams results
+- **vision-intake** — Calls OpenRouter (Gemini 3 Pro / `google/gemini-2.5-pro`) to run the Visionary agent chat
+- **surface-scan** — Calls OpenRouter (Claude 4.5 Opus / `anthropic/claude-opus-4`) for static analysis, streams results
+- **security-review** — Calls OpenRouter (DeepSeek V3.2 Reasoner / `deepseek/deepseek-reasoner`) for security validation
+- **generate-plan** — Calls OpenRouter (GPT-5.2 / `openai/gpt-5.2`) for action plan generation
+- **generate-education** — Calls OpenRouter (Claude 4.5 Sonnet / `anthropic/claude-sonnet-4`) for educational cards
 - **deep-probe** — Proxies to Python microservice for Daytona dynamic analysis
-- **generate-plan** — Calls OpenRouter (Claude 4.5 Opus) for action plan generation
-- **generate-education** — Calls OpenRouter (Claude 4.5 Sonnet) for educational cards
-- **execute-fix** — Proxies to Python microservice for OpenHands agent fix execution
+- **execute-fix** — Proxies to Python microservice for OpenHands agent fix execution (DeepSeek V3.2)
 - **create-pr** — GitHub API to create branch + PR
 
 ### Python Microservice (FastAPI — deployed to Railway/Render)
@@ -155,7 +167,7 @@
 - Streams output via SSE
 
 ### Required Secrets
-- `OPENROUTER_API_KEY` — your key for all model access (Gemini, Claude, DeepSeek)
+- `OPENROUTER_API_KEY` — your key for all model access (Gemini, Claude, GPT, DeepSeek)
 - `DAYTONA_API_KEY` — for sandbox creation
 - `PYTHON_SERVICE_URL` — URL of your deployed FastAPI service
 - GitHub OAuth token — from user's auth session
@@ -164,16 +176,17 @@
 
 ## Implementation Order
 
-1. Landing Page — Dark Mission Control hero + CTA
-2. GitHub OAuth — Supabase Auth with GitHub provider
-3. Database Schema — All tables
-4. Vision Intake — Chat interface + Gemini 3 Pro via OpenRouter
-5. Surface Scan (Tier 1) — Edge function + OpenRouter (Gemini) + streaming terminal
-6. Health Report Dashboard — Score gauge, categories, action items, educational cards
-7. Action Plan Generation — Claude 4.5 Opus via OpenRouter
-8. Education Layer — Claude 4.5 Sonnet via OpenRouter for "Why This Matters" cards
-9. Python Microservice — FastAPI + OpenHands SDK + Daytona (generated code for external deploy)
-10. Deep Probe (Tier 2) — Dynamic analysis via Python service
-11. Auto-Fixer — Fix generation (DeepSeek V3.2) + execution + verification + PR creation
-12. My Projects Dashboard — History, re-scan, trends, trajectory storage
-
+1. ✅ Landing Page — Dark Mission Control hero + CTA
+2. ✅ GitHub OAuth — Supabase Auth with GitHub provider
+3. ✅ Database Schema — All tables
+4. ✅ Edge Functions — surface-scan, vision-intake, generate-plan, generate-education
+5. ✅ Scan Flow — NewScan → ScanLive with Thinking Stream
+6. Security Review — Agent_Security edge function with VETO power
+7. Vision Intake — Chat interface + Gemini 3 Pro via OpenRouter
+8. Health Report Dashboard — Score gauge, categories, action items, security verdict
+9. Action Plan Generation — GPT-5.2 via OpenRouter
+10. Education Layer — Claude 4.5 Sonnet via OpenRouter for "Why This Matters" cards
+11. Python Microservice — FastAPI + OpenHands SDK + Daytona (generated code for external deploy)
+12. Deep Probe (Tier 2) — Dynamic analysis via Python service
+13. Auto-Fixer — Fix generation (DeepSeek V3.2) + security review + execution + verification + PR creation
+14. My Projects Dashboard — History, re-scan, trends, trajectory storage

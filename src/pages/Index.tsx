@@ -200,12 +200,14 @@ const Index = () => {
               <span className="ml-3 text-xs font-mono text-muted-foreground">the-thinking-stream</span>
             </div>
             <div className="p-6 font-mono text-sm space-y-2">
-              <p><span className="text-neon-green">▸ Agent_Scanner:</span> <span className="text-muted-foreground">Ingesting 247 files via Gemini 3 Pro...</span></p>
-              <p><span className="text-neon-cyan">▸ Agent_Scanner:</span> <span className="text-muted-foreground">Found hardcoded Stripe key in src/config.ts:42</span> <span className="text-neon-red">⚠ CRITICAL</span></p>
-              <p><span className="text-neon-purple">▸ Agent_Planner:</span> <span className="text-muted-foreground">Generating action plan via Claude 4.5 Opus...</span></p>
-              <p><span className="text-neon-orange">▸ Agent_Builder:</span> <span className="text-muted-foreground">Entering Daytona sandbox... running npm test...</span></p>
-              <p><span className="text-neon-orange">▸ Agent_Builder:</span> <span className="text-muted-foreground">12 of 20 tests failing.</span> <span className="text-neon-red">⚠ HIGH</span></p>
-              <p><span className="text-neon-green">▸ Agent_Educator:</span> <span className="text-muted-foreground">Generating "Why This Matters" cards...</span></p>
+              <p><span className="text-neon-cyan">▸ Agent_Visionary:</span> <span className="text-muted-foreground">Generating project charter from vibe prompt...</span></p>
+              <p><span className="text-neon-green">▸ Agent_Auditor:</span> <span className="text-muted-foreground">Ingesting 247 files via Claude 4.5 Opus...</span></p>
+              <p><span className="text-neon-green">▸ Agent_Auditor:</span> <span className="text-muted-foreground">Found hardcoded Stripe key in src/config.ts:42</span> <span className="text-neon-red">⚠ CRITICAL</span></p>
+              <p><span className="text-neon-red">▸ Agent_Security:</span> <span className="text-muted-foreground">🛡️ Confirmed: sk_live key exposed. SOC 2 violation.</span></p>
+              <p><span className="text-neon-purple">▸ Agent_Architect:</span> <span className="text-muted-foreground">Designing refactoring plan via GPT-5.2...</span></p>
+              <p><span className="text-neon-orange">▸ Agent_SRE:</span> <span className="text-muted-foreground">Entering Daytona sandbox... running npm test...</span></p>
+              <p><span className="text-neon-orange">▸ Agent_SRE:</span> <span className="text-muted-foreground">12 of 20 tests failing.</span> <span className="text-neon-red">⚠ HIGH</span></p>
+              <p><span className="text-primary">▸ Agent_Educator:</span> <span className="text-muted-foreground">Generating "Why This Matters" cards...</span></p>
               <p className="text-primary animate-pulse-neon">█</p>
             </div>
           </div>
@@ -235,7 +237,7 @@ const Index = () => {
         {/* Footer */}
         <footer className="mt-32 pt-8 border-t border-border text-center">
           <p className="text-xs text-muted-foreground">
-            Powered by OpenRouter • Gemini 3 Pro • Claude 4.5 Opus • DeepSeek V3.2 • OpenHands SDK • Daytona
+            Powered by OpenRouter • Gemini 3 Pro • Claude 4.5 Opus • GPT-5.2 • DeepSeek V3.2 • OpenHands SDK • Daytona
           </p>
         </footer>
       </main>
