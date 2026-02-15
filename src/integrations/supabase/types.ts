@@ -227,6 +227,7 @@ export type Database = {
           report_data: Json | null
           scalability_score: number | null
           scan_tier: string
+          security_review: Json | null
           security_score: number | null
           started_at: string | null
           status: string
@@ -243,6 +244,7 @@ export type Database = {
           report_data?: Json | null
           scalability_score?: number | null
           scan_tier: string
+          security_review?: Json | null
           security_score?: number | null
           started_at?: string | null
           status?: string
@@ -259,6 +261,7 @@ export type Database = {
           report_data?: Json | null
           scalability_score?: number | null
           scan_tier?: string
+          security_review?: Json | null
           security_score?: number | null
           started_at?: string | null
           status?: string

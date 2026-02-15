@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Shield, ArrowLeft, AlertTriangle, Lock, Bug, TrendingUp, CheckCircle2, Circle, Clock, RefreshCw, Lightbulb, Briefcase } from "lucide-react";
+import { Shield, ArrowLeft, AlertTriangle, Lock, Bug, TrendingUp, CheckCircle2, Circle, Clock, RefreshCw, Lightbulb, Briefcase, ShieldCheck, ShieldAlert, ShieldX } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -89,6 +89,7 @@ const Report = () => {
   const { user } = useAuth();
   const [actionItems, setActionItems] = useState<ActionItem[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [securityReview, setSecurityReview] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [scanTier, setScanTier] = useState("");
   const [repoName, setRepoName] = useState("");
@@ -114,6 +115,7 @@ const Report = () => {
 
       setScanTier(report.scan_tier);
       setProjectId(report.project_id);
+      setSecurityReview((report as any).security_review || null);
       const project = report.projects as unknown as { repo_name: string; repo_url: string } | null;
       setRepoName(project?.repo_name || project?.repo_url || "Unknown");
       setRepoUrl(project?.repo_url || "");
@@ -317,6 +319,78 @@ const Report = () => {
           </Card>
         )}
 
+        {/* Security Officer Verdict */}
+        {securityReview && (
+          <Card className="glass-strong mb-8 border-neon-red/20">
+            <CardContent className="pt-6 pb-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-10 h-10 rounded-lg bg-neon-red/10 flex items-center justify-center">
+                  <ShieldCheck className="w-5 h-5 text-neon-red" />
+                </div>
+                <div>
+                  <h2 className="text-lg font-bold">Security Officer Verdict</h2>
+                  <p className="text-xs text-muted-foreground">Agent_Security • DeepSeek Reasoner</p>
+                </div>
+              </div>
+
+              {securityReview.raw ? (
+                <p className="text-sm text-muted-foreground whitespace-pre-wrap">{securityReview.raw}</p>
+              ) : Array.isArray(securityReview) ? (
+                <div className="space-y-3">
+                  {securityReview.map((item: any, i: number) => (
+                    <div key={i} className="flex items-start gap-3 p-3 rounded-lg bg-secondary/50">
+                      {item.verdict === "confirmed" ? (
+                        <ShieldAlert className="w-4 h-4 text-neon-orange mt-0.5 shrink-0" />
+                      ) : item.verdict === "false_positive" ? (
+                        <ShieldX className="w-4 h-4 text-muted-foreground mt-0.5 shrink-0" />
+                      ) : (
+                        <ShieldCheck className="w-4 h-4 text-neon-green mt-0.5 shrink-0" />
+                      )}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 mb-1">
+                          <Badge variant={item.verdict === "confirmed" ? "destructive" : "secondary"} className="text-[10px]">
+                            {item.verdict}
+                          </Badge>
+                          {item.confidence && (
+                            <span className="text-[10px] text-muted-foreground">{item.confidence}% confidence</span>
+                          )}
+                        </div>
+                        <p className="text-xs text-muted-foreground">{item.reasoning}</p>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : securityReview.verdict ? (
+                <div className="flex items-start gap-3 p-4 rounded-lg bg-secondary/50">
+                  {securityReview.verdict === "approved" ? (
+                    <ShieldCheck className="w-6 h-6 text-neon-green shrink-0" />
+                  ) : (
+                    <ShieldX className="w-6 h-6 text-neon-red shrink-0" />
+                  )}
+                  <div>
+                    <p className="font-semibold text-sm mb-1">
+                      {securityReview.verdict === "approved" ? "✅ Approved" : "🚫 Vetoed"}
+                    </p>
+                    <p className="text-xs text-muted-foreground">{securityReview.reasoning}</p>
+                    {securityReview.vulnerabilities_found?.length > 0 && (
+                      <div className="mt-3 space-y-2">
+                        {securityReview.vulnerabilities_found.map((v: any, i: number) => (
+                          <div key={i} className="text-xs p-2 rounded bg-neon-red/5 border border-neon-red/10">
+                            <span className="font-semibold text-neon-red">[{v.severity?.toUpperCase()}]</span>{" "}
+                            {v.type}: {v.description}
+                            {v.file && <span className="block font-mono text-muted-foreground mt-0.5">📄 {v.file}</span>}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">{JSON.stringify(securityReview, null, 2)}</p>
+              )}
+            </CardContent>
+          </Card>
+        )}
         {/* Fix Status Filter */}
         {actionItems.length > 0 && (
           <div className="flex items-center gap-2 mb-6 flex-wrap">
