@@ -11,7 +11,7 @@ This app now uses:
 2. Copy:
    - Project URL
    - Anon/Public key
-3. Set env values in `.env` (or copy from `.env.example`):
+3. Set env values in `.env.local` (copy from `.env.example`):
 
 ```bash
 VITE_SUPABASE_URL="https://YOUR_PROJECT_REF.supabase.co"
