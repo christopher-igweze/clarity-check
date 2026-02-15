@@ -164,7 +164,7 @@ serve(async (req) => {
 
           // Set clone command
           const steps = [...PROBE_STEPS];
-          steps[0].command = `git clone ${cloneUrl} /workspace/repo 2>&1`;
+          steps[0].command = `git clone '${cloneUrl}' /workspace/repo 2>&1`;
 
           const results: Record<string, { exit_code: number; stdout: string; stderr: string; duration_ms: number }> = {};
 
