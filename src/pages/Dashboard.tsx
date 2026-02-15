@@ -1,7 +1,8 @@
 import { useAuth } from "@/contexts/AuthContext";
-import { Shield, LogOut, FolderGit2, Plus, ExternalLink } from "lucide-react";
+import { Shield, LogOut, FolderGit2, Plus, ExternalLink, Clock, BarChart3 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Card, CardContent } from "@/components/ui/card";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
@@ -16,10 +17,21 @@ interface Project {
   created_at: string;
 }
 
+interface ScanReport {
+  id: string;
+  project_id: string;
+  scan_tier: string;
+  status: string;
+  health_score: number | null;
+  created_at: string;
+  projects: { repo_name: string | null; repo_url: string } | null;
+}
+
 const Dashboard = () => {
   const { user, signOut } = useAuth();
   const navigate = useNavigate();
   const [projects, setProjects] = useState<Project[]>([]);
+  const [recentScans, setRecentScans] = useState<ScanReport[]>([]);
   const [loading, setLoading] = useState(true);
 
   const githubUsername = user?.user_metadata?.user_name || user?.email || "User";
@@ -27,15 +39,16 @@ const Dashboard = () => {
 
   useEffect(() => {
     if (!user) return;
-    const fetchProjects = async () => {
-      const { data } = await supabase
-        .from("projects")
-        .select("*")
-        .order("created_at", { ascending: false });
-      setProjects((data as Project[]) || []);
+    const fetchData = async () => {
+      const [projectsRes, scansRes] = await Promise.all([
+        supabase.from("projects").select("*").order("updated_at", { ascending: false }),
+        supabase.from("scan_reports").select("*, projects(repo_name, repo_url)").order("created_at", { ascending: false }).limit(10),
+      ]);
+      setProjects((projectsRes.data as Project[]) || []);
+      setRecentScans((scansRes.data as unknown as ScanReport[]) || []);
       setLoading(false);
     };
-    fetchProjects();
+    fetchData();
   }, [user]);
 
   const scoreColor = (score: number | null) => {
@@ -43,6 +56,15 @@ const Dashboard = () => {
     if (score >= 80) return "text-neon-green";
     if (score >= 50) return "text-neon-orange";
     return "text-neon-red";
+  };
+
+  const timeAgo = (dateStr: string) => {
+    const diff = Date.now() - new Date(dateStr).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return `${Math.floor(hours / 24)}d ago`;
   };
 
   return (
@@ -70,7 +92,7 @@ const Dashboard = () => {
         </div>
       </nav>
 
-      <main className="relative z-10 max-w-5xl mx-auto px-6 pt-12">
+      <main className="relative z-10 max-w-5xl mx-auto px-6 pt-12 pb-20">
         <div className="flex items-center justify-between mb-8">
           <h1 className="text-3xl font-bold">My Projects</h1>
           <Button onClick={() => navigate("/scan/new")} className="neon-glow-green">
@@ -95,35 +117,89 @@ const Dashboard = () => {
             </Button>
           </div>
         ) : (
-          <div className="space-y-4">
-            {projects.map((project) => (
-              <div
-                key={project.id}
-                className="glass rounded-xl p-6 flex items-center justify-between hover:border-primary/20 transition-colors cursor-pointer"
-                onClick={() => navigate("/scan/new")}
-              >
-                <div className="flex items-center gap-4">
-                  <div className={`text-3xl font-bold font-mono ${scoreColor(project.latest_health_score)}`}>
-                    {project.latest_health_score ?? "—"}
-                  </div>
-                  <div>
-                    <h3 className="font-semibold">{project.repo_name || project.repo_url}</h3>
-                    <div className="flex items-center gap-2 mt-1">
-                      {project.latest_scan_tier && (
-                        <Badge variant="outline" className="text-xs">
-                          {project.latest_scan_tier === "surface" ? "⚡ Surface" : "🔬 Deep"}
-                        </Badge>
-                      )}
-                      <span className="text-xs text-muted-foreground">
-                        {project.scan_count} scan{project.scan_count !== 1 ? "s" : ""}
-                      </span>
+          <>
+            {/* Projects Grid */}
+            <div className="space-y-4 mb-12">
+              {projects.map((project) => (
+                <Card
+                  key={project.id}
+                  className="glass hover:border-primary/20 transition-colors cursor-pointer"
+                  onClick={() => {
+                    // Navigate to latest report if scan exists
+                    const latestScan = recentScans.find((s) => s.project_id === project.id && s.status === "completed");
+                    if (latestScan) {
+                      navigate(`/report/${latestScan.id}`);
+                    } else {
+                      navigate("/scan/new");
+                    }
+                  }}
+                >
+                  <CardContent className="py-5 px-6 flex items-center justify-between">
+                    <div className="flex items-center gap-4">
+                      <div className={`text-3xl font-bold font-mono ${scoreColor(project.latest_health_score)}`}>
+                        {project.latest_health_score ?? "—"}
+                      </div>
+                      <div>
+                        <h3 className="font-semibold">{project.repo_name || project.repo_url}</h3>
+                        <div className="flex items-center gap-2 mt-1">
+                          {project.latest_scan_tier && (
+                            <Badge variant="outline" className="text-xs">
+                              {project.latest_scan_tier === "surface" ? "⚡ Surface" : "🔬 Deep"}
+                            </Badge>
+                          )}
+                          <span className="text-xs text-muted-foreground">
+                            {project.scan_count} scan{project.scan_count !== 1 ? "s" : ""} • {timeAgo(project.created_at)}
+                          </span>
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                    <ExternalLink className="w-4 h-4 text-muted-foreground" />
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+
+            {/* Recent Scans */}
+            {recentScans.length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 mb-4">
+                  <BarChart3 className="w-5 h-5 text-muted-foreground" />
+                  <h2 className="text-xl font-semibold">Recent Scans</h2>
                 </div>
-                <ExternalLink className="w-4 h-4 text-muted-foreground" />
+                <div className="space-y-2">
+                  {recentScans.map((scan) => {
+                    const project = scan.projects as unknown as { repo_name: string | null; repo_url: string } | null;
+                    return (
+                      <div
+                        key={scan.id}
+                        className="glass rounded-lg px-5 py-3 flex items-center justify-between hover:border-primary/20 transition-colors cursor-pointer"
+                        onClick={() => scan.status === "completed" ? navigate(`/report/${scan.id}`) : null}
+                      >
+                        <div className="flex items-center gap-3">
+                          <span className={`font-mono font-bold ${scoreColor(scan.health_score)}`}>
+                            {scan.health_score ?? "—"}
+                          </span>
+                          <span className="text-sm">{project?.repo_name || project?.repo_url || "Unknown"}</span>
+                          <Badge variant="outline" className="text-[10px]">
+                            {scan.scan_tier === "surface" ? "⚡" : "🔬"} {scan.scan_tier}
+                          </Badge>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Badge variant={scan.status === "completed" ? "default" : "secondary"} className="text-[10px]">
+                            {scan.status}
+                          </Badge>
+                          <span className="text-xs text-muted-foreground flex items-center gap-1">
+                            <Clock className="w-3 h-3" />
+                            {timeAgo(scan.created_at)}
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
               </div>
-            ))}
-          </div>
+            )}
+          </>
         )}
       </main>
     </div>
