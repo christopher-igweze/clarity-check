@@ -45,12 +45,12 @@ The current Supabase Edge Functions that make OpenRouter API calls with repo con
 ## 3. Technical Stack
 
 ### Frontend (Existing — Keep)
-- **Framework:** Next.js 15 (App Router) / React 18 + Vite (current Lovable build)
-- **Styling:** Tailwind CSS + Shadcn/UI
+- **Framework:** React 18 + Vite 5 (SPA, client-side routing via React Router v6)
+- **Styling:** Tailwind CSS + shadcn/ui (Radix primitives)
 - **Icons:** Lucide React
 - **Charts:** Recharts
 - **Animations:** Framer Motion
-- **State:** React Query (TanStack)
+- **State:** TanStack React Query
 
 ### Backend (NEW — Must Be Built)
 - **Language:** Python 3.11+
