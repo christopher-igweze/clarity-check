@@ -91,17 +91,36 @@ export async function streamScanStatus({
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let doneCalled = false;
+
+  const safeDone = () => {
+    if (doneCalled) return;
+    doneCalled = true;
+    onDone();
+  };
+
+  const findEventDelimiter = (s: string) => {
+    // sse-starlette uses CRLF by default; handle both LF and CRLF delimiters.
+    const lf = s.indexOf("\n\n");
+    const crlf = s.indexOf("\r\n\r\n");
+
+    if (lf === -1) return crlf === -1 ? null : { index: crlf, length: 4 };
+    if (crlf === -1) return { index: lf, length: 2 };
+    return lf < crlf ? { index: lf, length: 2 } : { index: crlf, length: 4 };
+  };
 
   const dispatchEventBlock = (block: string) => {
-    const lines = block.split("\n");
+    const lines = block.split(/\r?\n/);
     let eventType = "message";
     const dataLines: string[] = [];
 
     for (const line of lines) {
-      if (line.startsWith("event:")) {
-        eventType = line.slice(6).trim();
-      } else if (line.startsWith("data:")) {
-        dataLines.push(line.slice(5).trim());
+      const clean = line.endsWith("\r") ? line.slice(0, -1) : line;
+      if (clean.startsWith(":") || clean.trim() === "") continue;
+      if (clean.startsWith("event:")) {
+        eventType = clean.slice(6).trim();
+      } else if (clean.startsWith("data:")) {
+        dataLines.push(clean.slice(5).trim());
       }
     }
 
@@ -118,7 +137,7 @@ export async function streamScanStatus({
     onEvent({ event: eventType, payload });
 
     if (eventType === "scan_complete" || eventType === "scan_error" || eventType === "timeout") {
-      onDone();
+      safeDone();
     }
   };
 
@@ -128,10 +147,10 @@ export async function streamScanStatus({
 
     buffer += decoder.decode(value, { stream: true });
 
-    let splitIndex: number;
-    while ((splitIndex = buffer.indexOf("\n\n")) !== -1) {
-      const chunk = buffer.slice(0, splitIndex);
-      buffer = buffer.slice(splitIndex + 2);
+    let delim: { index: number; length: number } | null;
+    while ((delim = findEventDelimiter(buffer)) !== null) {
+      const chunk = buffer.slice(0, delim.index);
+      buffer = buffer.slice(delim.index + delim.length);
       if (chunk.trim()) {
         dispatchEventBlock(chunk);
       }
@@ -142,7 +161,7 @@ export async function streamScanStatus({
     dispatchEventBlock(buffer);
   }
 
-  onDone();
+  safeDone();
 }
 
 export async function streamVisionIntake({
