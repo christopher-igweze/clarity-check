@@ -1,4 +1,4 @@
-import { supabase } from "@/integrations/supabase/client";
+import { getClerkToken } from "@/integrations/clerk/tokenStore";
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
@@ -7,16 +7,16 @@ const API_URL = `${API_BASE_URL}/api`;
 type StreamCallback = (text: string) => void;
 
 async function getAuthHeaders() {
-  const { data } = await supabase.auth.getSession();
-  const token = data.session?.access_token;
+  const token = await getClerkToken();
+  const devToken = import.meta.env.DEV ? import.meta.env.VITE_LOCAL_DEV_BEARER_TOKEN : undefined;
 
-  if (!token) {
-    throw new Error("Missing authenticated session.");
+  if (!token && !devToken) {
+    throw new Error("Missing authenticated session. Ensure Clerk is signed in or set VITE_LOCAL_DEV_BEARER_TOKEN for local development.");
   }
 
   return {
     "Content-Type": "application/json",
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${token ?? devToken}`,
   };
 }
 
@@ -160,10 +160,7 @@ export async function streamVisionIntake({
 }) {
   const resp = await fetch(`${FUNCTIONS_URL}/vision-intake`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-    },
+    headers: await getAuthHeaders(),
     body: JSON.stringify({ messages, repoUrl, vibePrompt }),
   });
 

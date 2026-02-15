@@ -8,6 +8,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
+import { getClerkToken } from "@/integrations/clerk/tokenStore";
 
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 
@@ -54,12 +55,15 @@ const Settings = () => {
     const exchangeCode = async () => {
       setConnectingGithub(true);
       try {
+        const token = await getClerkToken();
+        if (!token) throw new Error("Authentication token missing. Please sign in again.");
+
         console.log("GitHub OAuth: exchanging code...");
         const resp = await fetch(`${FUNCTIONS_URL}/github-oauth`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+            Authorization: `Bearer ${token}`,
           },
           body: JSON.stringify({
             action: "exchange_code",
@@ -106,11 +110,14 @@ const Settings = () => {
   const handleConnectGithub = async () => {
     setConnectingGithub(true);
     try {
+      const token = await getClerkToken();
+      if (!token) throw new Error("Authentication token missing. Please sign in again.");
+
       const resp = await fetch(`${FUNCTIONS_URL}/github-oauth`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({
           action: "get_auth_url",

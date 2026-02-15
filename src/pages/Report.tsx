@@ -8,6 +8,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
+import { getClerkToken } from "@/integrations/clerk/tokenStore";
 
 interface ActionItem {
   id: string;
@@ -176,11 +177,14 @@ const Report = () => {
         file_path: item.file_path,
       }));
 
+      const token = await getClerkToken();
+      if (!token) throw new Error("Authentication token missing. Please sign in again.");
+
       const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-education`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+          Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify({ findings }),
       });
