@@ -1,196 +1,145 @@
+import { supabase } from "@/integrations/supabase/client";
+
 const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+const API_URL = `${API_BASE_URL}/api`;
 
 type StreamCallback = (text: string) => void;
 
-export async function streamSurfaceScan({
-  repoContent,
-  repoUrl,
-  vibePrompt,
-  projectCharter,
-  onDelta,
-  onDone,
-}: {
-  repoContent: string;
-  repoUrl: string;
-  vibePrompt?: string;
-  projectCharter?: Record<string, unknown>;
-  onDelta: StreamCallback;
-  onDone: () => void;
-}) {
-  const resp = await fetch(`${FUNCTIONS_URL}/surface-scan`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-    },
-    body: JSON.stringify({ repoContent, repoUrl, vibePrompt, projectCharter }),
-  });
+async function getAuthHeaders() {
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
 
-  if (!resp.ok || !resp.body) {
-    const err = await resp.text();
-    throw new Error(err || "Failed to start scan");
+  if (!token) {
+    throw new Error("Missing authenticated session.");
   }
 
-  const reader = resp.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    let newlineIndex: number;
-    while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-      let line = buffer.slice(0, newlineIndex);
-      buffer = buffer.slice(newlineIndex + 1);
-
-      if (line.endsWith("\r")) line = line.slice(0, -1);
-      if (line.startsWith(":") || line.trim() === "") continue;
-      if (!line.startsWith("data: ")) continue;
-
-      const jsonStr = line.slice(6).trim();
-      if (jsonStr === "[DONE]") {
-        onDone();
-        return;
-      }
-
-      try {
-        const parsed = JSON.parse(jsonStr);
-        const content = parsed.choices?.[0]?.delta?.content;
-        if (content) onDelta(content);
-      } catch {
-        buffer = line + "\n" + buffer;
-        break;
-      }
-    }
-  }
-
-  // Final flush
-  if (buffer.trim()) {
-    for (let raw of buffer.split("\n")) {
-      if (!raw) continue;
-      if (raw.endsWith("\r")) raw = raw.slice(0, -1);
-      if (!raw.startsWith("data: ")) continue;
-      const jsonStr = raw.slice(6).trim();
-      if (jsonStr === "[DONE]") continue;
-      try {
-        const parsed = JSON.parse(jsonStr);
-        const content = parsed.choices?.[0]?.delta?.content;
-        if (content) onDelta(content);
-      } catch { /* ignore */ }
-    }
-  }
-
-  onDone();
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${token}`,
+  };
 }
 
-export async function callSecurityReview({
-  reviewType,
-  content,
-  findings,
-  codeChanges,
+export async function startAudit({
+  repoUrl,
+  scanTier,
+  vibePrompt,
   projectCharter,
 }: {
-  reviewType: "validate_findings" | "code_review" | "full_scan";
-  content?: string;
-  findings?: unknown[];
-  codeChanges?: unknown;
+  repoUrl: string;
+  scanTier: "surface" | "deep";
+  vibePrompt?: string;
   projectCharter?: Record<string, unknown>;
 }) {
-  const resp = await fetch(`${FUNCTIONS_URL}/security-review`, {
+  const resp = await fetch(`${API_URL}/audit`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
-    },
-    body: JSON.stringify({ reviewType, content, findings, codeChanges, projectCharter }),
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      repo_url: repoUrl,
+      scan_tier: scanTier,
+      vibe_prompt: vibePrompt,
+      project_charter: projectCharter,
+    }),
   });
 
   if (!resp.ok) {
     const err = await resp.text();
-    throw new Error(err || "Security review failed");
+    throw new Error(err || "Failed to start audit");
   }
 
-  return resp.json();
+  const data = await resp.json();
+  return {
+    scanId: data.scan_id as string,
+    status: data.status as string,
+    message: data.message as string,
+  };
 }
 
-export type DeepProbeCallback = (event: {
-  type: string;
-  step?: string;
-  status?: string;
-  agent?: string;
-  message?: string;
-  exit_code?: number;
-  stdout?: string;
-  stderr?: string;
-  duration_ms?: number;
-  install_ok?: boolean;
-  build_ok?: boolean;
-  tests_ok?: boolean;
-  tests_passed?: number | null;
-  tests_failed?: number | null;
-  audit_vulnerabilities?: number;
-  results?: Record<string, unknown>;
-}) => void;
+export type ScanStatusEvent = {
+  event: string;
+  payload: {
+    event_type?: string;
+    agent?: string;
+    message?: string;
+    level?: "info" | "warn" | "error" | "success";
+    data?: Record<string, unknown>;
+    timestamp?: string;
+  };
+};
 
-export async function streamDeepProbe({
-  repoUrl,
-  githubToken,
+export async function streamScanStatus({
+  scanId,
   onEvent,
   onDone,
 }: {
-  repoUrl: string;
-  githubToken?: string;
-  onEvent: DeepProbeCallback;
+  scanId: string;
+  onEvent: (event: ScanStatusEvent) => void;
   onDone: () => void;
 }) {
-  const resp = await fetch(`${FUNCTIONS_URL}/deep-probe`, {
-    method: "POST",
+  const resp = await fetch(`${API_URL}/status/${scanId}`, {
+    method: "GET",
     headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+      Authorization: (await getAuthHeaders()).Authorization,
     },
-    body: JSON.stringify({ repoUrl, githubToken }),
   });
 
   if (!resp.ok || !resp.body) {
     const err = await resp.text();
-    throw new Error(err || "Failed to start deep probe");
+    throw new Error(err || "Failed to stream scan status");
   }
 
   const reader = resp.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
 
+  const dispatchEventBlock = (block: string) => {
+    const lines = block.split("\n");
+    let eventType = "message";
+    const dataLines: string[] = [];
+
+    for (const line of lines) {
+      if (line.startsWith("event:")) {
+        eventType = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).trim());
+      }
+    }
+
+    const dataStr = dataLines.join("\n");
+    if (!dataStr) return;
+
+    let payload: ScanStatusEvent["payload"] = {};
+    try {
+      payload = JSON.parse(dataStr);
+    } catch {
+      payload = { message: dataStr };
+    }
+
+    onEvent({ event: eventType, payload });
+
+    if (eventType === "scan_complete" || eventType === "scan_error" || eventType === "timeout") {
+      onDone();
+    }
+  };
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
+
     buffer += decoder.decode(value, { stream: true });
 
-    let newlineIndex: number;
-    while ((newlineIndex = buffer.indexOf("\n")) !== -1) {
-      let line = buffer.slice(0, newlineIndex);
-      buffer = buffer.slice(newlineIndex + 1);
-
-      if (line.endsWith("\r")) line = line.slice(0, -1);
-      if (line.startsWith(":") || line.trim() === "") continue;
-      if (!line.startsWith("data: ")) continue;
-
-      const jsonStr = line.slice(6).trim();
-      if (jsonStr === "[DONE]") {
-        onDone();
-        return;
-      }
-
-      try {
-        const parsed = JSON.parse(jsonStr);
-        onEvent(parsed);
-      } catch {
-        buffer = line + "\n" + buffer;
-        break;
+    let splitIndex: number;
+    while ((splitIndex = buffer.indexOf("\n\n")) !== -1) {
+      const chunk = buffer.slice(0, splitIndex);
+      buffer = buffer.slice(splitIndex + 2);
+      if (chunk.trim()) {
+        dispatchEventBlock(chunk);
       }
     }
+  }
+
+  if (buffer.trim()) {
+    dispatchEventBlock(buffer);
   }
 
   onDone();
@@ -252,7 +201,7 @@ export async function streamVisionIntake({
         const content = parsed.choices?.[0]?.delta?.content;
         if (content) onDelta(content);
       } catch {
-        buffer = line + "\n" + buffer;
+        buffer = `${line}\n${buffer}`;
         break;
       }
     }
