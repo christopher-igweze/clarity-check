@@ -124,15 +124,7 @@ const Dashboard = () => {
                 <Card
                   key={project.id}
                   className="glass hover:border-primary/20 transition-colors cursor-pointer"
-                  onClick={() => {
-                    // Navigate to latest report if scan exists
-                    const latestScan = recentScans.find((s) => s.project_id === project.id && s.status === "completed");
-                    if (latestScan) {
-                      navigate(`/report/${latestScan.id}`);
-                    } else {
-                      navigate("/scan/new");
-                    }
-                  }}
+                  onClick={() => navigate(`/project/${project.id}`)}
                 >
                   <CardContent className="py-5 px-6 flex items-center justify-between">
                     <div className="flex items-center gap-4">
