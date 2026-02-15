@@ -1,12 +1,13 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Shield, ArrowLeft, AlertTriangle, Lock, Bug, TrendingUp, CheckCircle2, Circle, Clock, Wrench } from "lucide-react";
+import { Shield, ArrowLeft, AlertTriangle, Lock, Bug, TrendingUp, CheckCircle2, Circle, Clock, RefreshCw, Lightbulb, Briefcase } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 
 interface ActionItem {
   id: string;
@@ -17,6 +18,8 @@ interface ActionItem {
   file_path: string | null;
   line_number: number | null;
   fix_status: string;
+  why_it_matters: string | null;
+  cto_perspective: string | null;
 }
 
 interface Summary {
@@ -83,12 +86,18 @@ function ScoreGauge({ score, label, size = "lg" }: { score: number; label: strin
 const Report = () => {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [actionItems, setActionItems] = useState<ActionItem[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
   const [loading, setLoading] = useState(true);
   const [scanTier, setScanTier] = useState("");
   const [repoName, setRepoName] = useState("");
+  const [projectId, setProjectId] = useState("");
+  const [repoUrl, setRepoUrl] = useState("");
   const [filter, setFilter] = useState<"all" | "open" | "in_progress" | "fixed">("all");
+  const [educationCards, setEducationCards] = useState<Record<string, { why_it_matters: string; cto_perspective: string }>>({});
+  const [educationLoading, setEducationLoading] = useState(false);
+  const [expandedCard, setExpandedCard] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -104,8 +113,10 @@ const Report = () => {
       if (!report) { setLoading(false); return; }
 
       setScanTier(report.scan_tier);
+      setProjectId(report.project_id);
       const project = report.projects as unknown as { repo_name: string; repo_url: string } | null;
       setRepoName(project?.repo_name || project?.repo_url || "Unknown");
+      setRepoUrl(project?.repo_url || "");
 
       if (report.health_score) {
         setSummary({
@@ -145,6 +156,78 @@ const Report = () => {
     setActionItems((prev) =>
       prev.map((ai) => ai.id === item.id ? { ...ai, fix_status: nextStatus } : ai)
     );
+  };
+
+  const fetchEducation = async () => {
+    if (actionItems.length === 0) return;
+    setEducationLoading(true);
+    try {
+      const findings = actionItems.slice(0, 10).map((item) => ({
+        id: item.id,
+        title: item.title,
+        description: item.description,
+        category: item.category,
+        severity: item.severity,
+        file_path: item.file_path,
+      }));
+
+      const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-education`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY}`,
+        },
+        body: JSON.stringify({ findings }),
+      });
+
+      if (!resp.ok) throw new Error("Failed to generate education cards");
+      const data = await resp.json();
+      const content = data.choices?.[0]?.message?.content || "";
+
+      // Parse JSON objects from response
+      const cards: Record<string, { why_it_matters: string; cto_perspective: string }> = {};
+      for (const line of content.split("\n")) {
+        try {
+          const obj = JSON.parse(line.trim());
+          if (obj.finding_id) cards[obj.finding_id] = { why_it_matters: obj.why_it_matters, cto_perspective: obj.cto_perspective };
+        } catch {
+          // Try parsing entire content as JSON array
+        }
+      }
+
+      // If no line-by-line parsing worked, try as array
+      if (Object.keys(cards).length === 0) {
+        try {
+          const arr = JSON.parse(content);
+          if (Array.isArray(arr)) {
+            arr.forEach((obj: { finding_id: string; why_it_matters: string; cto_perspective: string }) => {
+              if (obj.finding_id) cards[obj.finding_id] = { why_it_matters: obj.why_it_matters, cto_perspective: obj.cto_perspective };
+            });
+          }
+        } catch { /* ignore */ }
+      }
+
+      setEducationCards(cards);
+
+      // Persist to action_items
+      for (const [itemId, card] of Object.entries(cards)) {
+        await supabase
+          .from("action_items")
+          .update({ why_it_matters: card.why_it_matters, cto_perspective: card.cto_perspective })
+          .eq("id", itemId);
+      }
+    } catch (err) {
+      toast({ title: "Error", description: "Failed to generate educational cards.", variant: "destructive" });
+    }
+    setEducationLoading(false);
+  };
+
+  const handleRescan = () => {
+    if (projectId && repoUrl) {
+      navigate("/scan/live", {
+        state: { projectId, repoUrl, tier: scanTier || "surface" },
+      });
+    }
   };
 
   const filteredItems = filter === "all" ? actionItems : actionItems.filter((i) => i.fix_status === filter);
@@ -192,10 +275,29 @@ const Report = () => {
       </nav>
 
       <main className="relative z-10 max-w-5xl mx-auto px-6 pt-8 pb-20">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold mb-1">Production Health Report</h1>
-          <p className="text-muted-foreground font-mono text-sm">{repoName}</p>
-          <Badge variant="outline" className="mt-2 text-xs">{scanTier === "deep" ? "🔬 Deep Probe" : "⚡ Surface Scan"}</Badge>
+        <div className="mb-8 flex items-start justify-between">
+          <div>
+            <h1 className="text-3xl font-bold mb-1">Production Health Report</h1>
+            <p className="text-muted-foreground font-mono text-sm">{repoName}</p>
+            <Badge variant="outline" className="mt-2 text-xs">{scanTier === "deep" ? "🔬 Deep Probe" : "⚡ Surface Scan"}</Badge>
+          </div>
+          <div className="flex items-center gap-2">
+            {actionItems.length > 0 && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={fetchEducation}
+                disabled={educationLoading}
+                className="border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/10"
+              >
+                <Lightbulb className="w-4 h-4 mr-1" />
+                {educationLoading ? "Generating..." : "Why This Matters"}
+              </Button>
+            )}
+            <Button variant="outline" size="sm" onClick={handleRescan}>
+              <RefreshCw className="w-4 h-4 mr-1" /> Rescan
+            </Button>
+          </div>
         </div>
 
         {/* Score Dashboard */}
@@ -282,6 +384,38 @@ const Report = () => {
                               <p className="text-xs font-mono text-muted-foreground mt-1.5">
                                 📄 {item.file_path}{item.line_number ? `:${item.line_number}` : ""}
                               </p>
+                             )}
+                            {/* Education Cards */}
+                            {(educationCards[item.id] || item.why_it_matters) && (
+                              <div className="mt-3 space-y-2">
+                                <button
+                                  onClick={() => setExpandedCard(expandedCard === item.id ? null : item.id)}
+                                  className="text-xs text-neon-cyan hover:underline flex items-center gap-1"
+                                >
+                                  <Lightbulb className="w-3 h-3" />
+                                  {expandedCard === item.id ? "Hide insights" : "Why this matters"}
+                                </button>
+                                {expandedCard === item.id && (
+                                  <div className="space-y-2 pl-4 border-l-2 border-neon-cyan/30">
+                                    <div>
+                                      <span className="text-[10px] font-semibold text-neon-cyan uppercase tracking-wider flex items-center gap-1">
+                                        <Lightbulb className="w-3 h-3" /> Why This Matters
+                                      </span>
+                                      <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                                        {educationCards[item.id]?.why_it_matters || item.why_it_matters}
+                                      </p>
+                                    </div>
+                                    <div>
+                                      <span className="text-[10px] font-semibold text-neon-orange uppercase tracking-wider flex items-center gap-1">
+                                        <Briefcase className="w-3 h-3" /> CTO's Perspective
+                                      </span>
+                                      <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+                                        {educationCards[item.id]?.cto_perspective || item.cto_perspective}
+                                      </p>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
                             )}
                           </div>
                         </div>
