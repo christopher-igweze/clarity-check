@@ -12,6 +12,7 @@ import ScanLive from "./pages/ScanLive";
 import Report from "./pages/Report";
 import VisionIntake from "./pages/VisionIntake";
 import ProjectDetail from "./pages/ProjectDetail";
+import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -31,6 +32,7 @@ const App = () => (
             <Route path="/report/:id" element={<ProtectedRoute><Report /></ProtectedRoute>} />
             <Route path="/project/:id" element={<ProtectedRoute><ProjectDetail /></ProtectedRoute>} />
             <Route path="/vision-intake" element={<ProtectedRoute><VisionIntake /></ProtectedRoute>} />
+            <Route path="/settings" element={<ProtectedRoute><Settings /></ProtectedRoute>} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

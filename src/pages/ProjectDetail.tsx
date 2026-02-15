@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Shield, ArrowLeft, Plus, Clock, ExternalLink } from "lucide-react";
+import { Shield, ArrowLeft, Plus, Clock, ExternalLink, Trash2 } from "lucide-react";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from "@/components/ui/alert-dialog";
 import { supabase } from "@/integrations/supabase/client";
+import { toast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -59,6 +61,17 @@ const ProjectDetail = () => {
     reliability: s.reliability_score,
     scalability: s.scalability_score,
   }));
+
+  const handleDelete = async () => {
+    if (!id) return;
+    const { error } = await supabase.from("projects").delete().eq("id", id);
+    if (error) {
+      toast({ title: "Error", description: "Failed to delete project.", variant: "destructive" });
+      return;
+    }
+    toast({ title: "Deleted", description: "Project deleted successfully." });
+    navigate("/dashboard");
+  };
 
   const scoreColor = (score: number | null) => {
     if (score === null) return "text-muted-foreground";
@@ -127,14 +140,37 @@ const ProjectDetail = () => {
               <span className="text-xs text-muted-foreground">{project.scan_count} scan{project.scan_count !== 1 ? "s" : ""}</span>
             </div>
           </div>
-          <Button
-            onClick={() => navigate("/scan/live", {
-              state: { projectId: project.id, repoUrl: project.repo_url, tier: project.latest_scan_tier || "surface" },
-            })}
-            className="neon-glow-green"
-          >
-            <Plus className="w-4 h-4 mr-1" /> New Scan
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={() => navigate("/scan/live", {
+                state: { projectId: project.id, repoUrl: project.repo_url, tier: project.latest_scan_tier || "surface" },
+              })}
+              className="neon-glow-green"
+            >
+              <Plus className="w-4 h-4 mr-1" /> New Scan
+            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" size="icon" className="border-destructive/30 text-destructive hover:bg-destructive/10">
+                  <Trash2 className="w-4 h-4" />
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Delete Project</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will permanently delete this project and all its scan reports. This action cannot be undone.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                    Delete
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </div>
         </div>
 
         {/* Current Score */}
