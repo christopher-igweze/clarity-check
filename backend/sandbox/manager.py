@@ -140,8 +140,15 @@ class SandboxManager:
         session = self._sessions.get(scan_id)
         if session is None:
             raise RuntimeError(f"No sandbox session for scan {scan_id}")
-        content = session.sandbox.fs.download_file(path)
-        return content.decode("utf-8", errors="replace")
+        try:
+            content = session.sandbox.fs.download_file(path)
+            return content.decode("utf-8", errors="replace")
+        except Exception as exc:
+            logger.warning("download_file failed for %s: %s; falling back to cat", path, exc)
+            result = await self.exec(scan_id, f"cat {path}", cwd="/home/daytona", timeout=120)
+            if result.exit_code != 0:
+                raise RuntimeError(f"Failed to read file via fallback cat: {path}")
+            return result.stdout
 
     async def upload_file(self, scan_id: UUID, path: str, content: bytes) -> None:
         """Upload a file into the sandbox."""
