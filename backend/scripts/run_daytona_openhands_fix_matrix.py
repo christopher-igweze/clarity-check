@@ -846,6 +846,43 @@ def run_medium_preflight_until_healthy(candidates: list[RepoTarget]) -> tuple[li
     return rows, None
 
 
+def _combo_key(repo: RepoTarget, model: ModelTarget) -> str:
+    return f"{repo.label}::{model.model}"
+
+
+def _load_checkpoint(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"version": 1, "iterations": {}}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {"version": 1, "iterations": {}}
+    if not isinstance(payload, dict):
+        return {"version": 1, "iterations": {}}
+    payload.setdefault("version", 1)
+    payload.setdefault("iterations", {})
+    if not isinstance(payload["iterations"], dict):
+        payload["iterations"] = {}
+    return payload
+
+
+def _save_checkpoint(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    tmp.replace(path)
+
+
+def _rows_in_combo_order(combos: list[tuple[RepoTarget, ModelTarget]], row_by_key: dict[str, dict]) -> list[dict]:
+    rows: list[dict] = []
+    for repo, model in combos:
+        key = _combo_key(repo, model)
+        row = row_by_key.get(key)
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
 async def _run_combo(repo: RepoTarget, model: ModelTarget, score_target: float) -> dict:
     mgr = SandboxManager()
     scan_id = uuid4()
@@ -1246,6 +1283,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pool-storage-gb", type=int, default=30)
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--score-target", type=float, default=85.0)
+    parser.add_argument(
+        "--checkpoint-path",
+        type=str,
+        default=str(RUNS_DIR / "daytona-openhands-matrix-checkpoint.json"),
+    )
     return parser.parse_args()
 
 
@@ -1253,6 +1295,9 @@ def main() -> None:
     args = _parse_args()
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     ts = _now_ts()
+    checkpoint_path = Path(args.checkpoint_path)
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = (ROOT_DIR / checkpoint_path).resolve()
     _log(
         "matrix run start "
         f"iterations={args.iterations} target_workers={args.target_workers} score_target={args.score_target}"
@@ -1332,6 +1377,8 @@ def main() -> None:
         f"resource cap computed={resource_cap} with sandbox={settings.sandbox_cpu}/{settings.sandbox_memory_gb}/{settings.sandbox_disk_gb} "
         f"pool={args.pool_cpu}/{args.pool_memory_gb}/{args.pool_storage_gb}"
     )
+    checkpoint = _load_checkpoint(checkpoint_path)
+    _log(f"checkpoint file={checkpoint_path}")
 
     payload: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1346,29 +1393,79 @@ def main() -> None:
             "sandbox_memory_gb": settings.sandbox_memory_gb,
             "sandbox_disk_gb": settings.sandbox_disk_gb,
             "resource_worker_cap": resource_cap,
+            "checkpoint_path": str(checkpoint_path),
         },
         "matrix_models": [asdict(m) for m in models],
         "iterations": [],
     }
 
     for iteration in range(1, args.iterations + 1):
-        _log(f"iteration {iteration} start: medium preflight across {len(medium_candidates)} candidates")
-        preflight_rows, selected_medium_row = run_medium_preflight_until_healthy(medium_candidates)
-        if not selected_medium_row:
-            _log("iteration failed: no healthy medium candidate")
-            raise RuntimeError("medium repo environment incompatible after preflight remediation")
+        iter_key = str(iteration)
+        iterations_cp = checkpoint.setdefault("iterations", {})
+        iter_checkpoint = iterations_cp.get(iter_key)
+        if not isinstance(iter_checkpoint, dict):
+            iter_checkpoint = {}
+
+        selected_medium_row = iter_checkpoint.get("selected_medium")
+        preflight_rows = iter_checkpoint.get("medium_preflight") or []
+        if isinstance(selected_medium_row, dict) and preflight_rows:
+            _log(
+                f"iteration {iteration} resume: reusing medium repo="
+                f"{(selected_medium_row.get('repo') or {}).get('repo_url', 'unknown')}"
+            )
+        else:
+            _log(f"iteration {iteration} start: medium preflight across {len(medium_candidates)} candidates")
+            preflight_rows, selected_medium_row = run_medium_preflight_until_healthy(medium_candidates)
+            if not selected_medium_row:
+                _log("iteration failed: no healthy medium candidate")
+                raise RuntimeError("medium repo environment incompatible after preflight remediation")
+            iter_checkpoint = {
+                "medium_preflight": preflight_rows,
+                "selected_medium": selected_medium_row,
+                "completed_runs": {},
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            iterations_cp[iter_key] = iter_checkpoint
+            _save_checkpoint(checkpoint_path, checkpoint)
+
         medium_repo = RepoTarget(**selected_medium_row["repo"])
         _log(f"iteration {iteration} selected medium repo={medium_repo.repo_url}")
 
         repos = [easy_repo, medium_repo, hard_repo]
         combos = [(repo, model) for repo in repos for model in models]
+        existing_completed = iter_checkpoint.get("completed_runs") or {}
+        row_by_key: dict[str, dict] = {}
+        if isinstance(existing_completed, dict):
+            for key, value in existing_completed.items():
+                if isinstance(value, dict):
+                    row_by_key[key] = value
+
+        pending_combos = [(repo, model) for repo, model in combos if _combo_key(repo, model) not in row_by_key]
         max_workers = min(args.target_workers, len(combos), resource_cap)
-        _log(f"iteration {iteration} combo_count={len(combos)} max_workers={max_workers}")
-        rows: list[dict] = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            futures = [pool.submit(_run_combo_sync, repo, model, args.score_target) for repo, model in combos]
-            for fut in concurrent.futures.as_completed(futures):
-                rows.append(fut.result())
+        _log(
+            f"iteration {iteration} combo_count={len(combos)} completed={len(row_by_key)} "
+            f"pending={len(pending_combos)} max_workers={max_workers}"
+        )
+        if pending_combos:
+            exec_workers = min(max_workers, len(pending_combos))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=exec_workers) as pool:
+                future_to_key = {
+                    pool.submit(_run_combo_sync, repo, model, args.score_target): _combo_key(repo, model)
+                    for repo, model in pending_combos
+                }
+                for fut in concurrent.futures.as_completed(future_to_key):
+                    key = future_to_key[fut]
+                    row_by_key[key] = fut.result()
+                    iter_checkpoint["completed_runs"] = row_by_key
+                    iter_checkpoint["updated_at"] = datetime.now(timezone.utc).isoformat()
+                    iterations_cp[iter_key] = iter_checkpoint
+                    _save_checkpoint(checkpoint_path, checkpoint)
+
+        rows = _rows_in_combo_order(combos, row_by_key)
+        if len(rows) != len(combos):
+            raise RuntimeError(
+                f"iteration {iteration} incomplete: expected {len(combos)} rows, got {len(rows)}"
+            )
         _log(f"iteration {iteration} completed all combos")
 
         model_means = _model_mean_scores(rows)
@@ -1411,6 +1508,9 @@ def main() -> None:
         ROOT_DIR / "doc" / "prompt-guides" / "ONE_SHOT_MATRIX_RESULTS.md",
         payload,
     )
+    if checkpoint_path.exists():
+        checkpoint_path.unlink()
+        _log(f"checkpoint cleared {checkpoint_path}")
 
     _log(f"matrix run finished json={json_path} md={md_path}")
     print(str(json_path))
