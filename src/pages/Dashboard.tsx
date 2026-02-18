@@ -6,13 +6,13 @@ import { Card, CardContent } from "@/components/ui/card";
 import { useNavigate } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
+import { getLimits } from "@/lib/api";
 
 interface Project {
   id: string;
   repo_url: string;
   repo_name: string | null;
   latest_health_score: number | null;
-  latest_scan_tier: string | null;
   scan_count: number;
   created_at: string;
 }
@@ -33,6 +33,7 @@ const Dashboard = () => {
   const [projects, setProjects] = useState<Project[]>([]);
   const [recentScans, setRecentScans] = useState<ScanReport[]>([]);
   const [loading, setLoading] = useState(true);
+  const [limits, setLimits] = useState<{ reports_remaining: number; reports_limit: number } | null>(null);
 
   const githubUsername = user?.user_metadata?.user_name || user?.email || "User";
   const avatarUrl = user?.user_metadata?.avatar_url;
@@ -40,12 +41,19 @@ const Dashboard = () => {
   useEffect(() => {
     if (!user) return;
     const fetchData = async () => {
-      const [projectsRes, scansRes] = await Promise.all([
+      const [projectsRes, scansRes, limitsRes] = await Promise.all([
         supabase.from("projects").select("*").order("updated_at", { ascending: false }),
         supabase.from("scan_reports").select("*, projects(repo_name, repo_url)").order("created_at", { ascending: false }).limit(10),
+        getLimits().catch(() => null),
       ]);
       setProjects((projectsRes.data as Project[]) || []);
       setRecentScans((scansRes.data as unknown as ScanReport[]) || []);
+      if (limitsRes) {
+        setLimits({
+          reports_remaining: limitsRes.reports_remaining,
+          reports_limit: limitsRes.reports_limit,
+        });
+      }
       setLoading(false);
     };
     fetchData();
@@ -98,10 +106,17 @@ const Dashboard = () => {
       <main className="relative z-10 max-w-5xl mx-auto px-6 pt-12 pb-20">
         <div className="flex items-center justify-between mb-8">
           <h1 className="text-3xl font-bold">My Projects</h1>
-          <Button onClick={() => navigate("/scan/new")} className="neon-glow-green">
-            <Plus className="w-4 h-4 mr-2" />
-            New Scan
-          </Button>
+          <div className="flex items-center gap-3">
+            {limits && (
+              <Badge variant="outline" className="text-xs">
+                Free reports left: {limits.reports_remaining}/{limits.reports_limit}
+              </Badge>
+            )}
+            <Button onClick={() => navigate("/scan/new")} className="neon-glow-green">
+              <Plus className="w-4 h-4 mr-2" />
+              New Scan
+            </Button>
+          </div>
         </div>
 
         {loading ? (
@@ -137,11 +152,9 @@ const Dashboard = () => {
                       <div>
                         <h3 className="font-semibold">{project.repo_name || project.repo_url}</h3>
                         <div className="flex items-center gap-2 mt-1">
-                          {project.latest_scan_tier && (
-                            <Badge variant="outline" className="text-xs">
-                              {project.latest_scan_tier === "surface" ? "⚡ Surface" : "🔬 Deep"}
-                            </Badge>
-                          )}
+                          <Badge variant="outline" className="text-xs">
+                            {project.latest_scan_tier === "free" ? "🆓 Tier 1" : "🔬 Deep Audit"}
+                          </Badge>
                           <span className="text-xs text-muted-foreground">
                             {project.scan_count} scan{project.scan_count !== 1 ? "s" : ""} • {timeAgo(project.created_at)}
                           </span>
@@ -176,7 +189,7 @@ const Dashboard = () => {
                           </span>
                           <span className="text-sm">{project?.repo_name || project?.repo_url || "Unknown"}</span>
                           <Badge variant="outline" className="text-[10px]">
-                            {scan.scan_tier === "surface" ? "⚡" : "🔬"} {scan.scan_tier}
+                            {scan.scan_tier === "free" ? "🆓 free" : "🔬 deep"}
                           </Badge>
                         </div>
                         <div className="flex items-center gap-2">

@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, ReactNode, useMemo, useState } from "react";
+import { createContext, useContext, useEffect, ReactNode, useMemo, useState, useCallback } from "react";
 import { useAuth as useClerkAuth, useClerk, useUser } from "@clerk/clerk-react";
 import { supabase } from "@/integrations/supabase/client";
 import { setClerkTokenGetter, setCurrentUserId } from "@/integrations/clerk/tokenStore";
@@ -17,10 +17,30 @@ export interface AppUser {
   user_metadata: AppUserMetadata;
 }
 
+export interface AppProfile {
+  user_id: string;
+  display_name: string | null;
+  avatar_url: string | null;
+  github_username: string | null;
+  github_access_token: string | null;
+  onboarding_complete: boolean | null;
+  technical_level: string | null;
+  explanation_style: string | null;
+  shipping_posture: string | null;
+  tool_tags: unknown;
+  acquisition_source: string | null;
+  acquisition_other: string | null;
+  coding_agent_provider: string | null;
+  coding_agent_model: string | null;
+}
+
 interface AuthContextType {
   session: null;
   user: AppUser | null;
+  profile: AppProfile | null;
+  onboardingComplete: boolean;
   loading: boolean;
+  refreshProfile: () => Promise<void>;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
 }
@@ -44,6 +64,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const { isLoaded: userLoaded, user: clerkUser } = useUser();
   const clerk = useClerk();
   const [profileReady, setProfileReady] = useState(false);
+  const [profile, setProfile] = useState<AppProfile | null>(null);
 
   const user = useMemo(() => {
     if (!clerkUser) return null;
@@ -67,6 +88,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setCurrentUserId(user?.id || null);
   }, [user?.id]);
 
+  const refreshProfile = useCallback(async () => {
+    if (!user) {
+      setProfile(null);
+      return;
+    }
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("*")
+      .eq("user_id", user.id)
+      .single();
+
+    if (error) {
+      console.error("Profile fetch error:", error);
+      return;
+    }
+    setProfile((data as AppProfile) || null);
+  }, [user]);
+
   useEffect(() => {
     let active = true;
 
@@ -78,6 +117,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     if (!user) {
+      setProfile(null);
       setProfileReady(true);
       return () => {
         active = false;
@@ -91,12 +131,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           display_name: user.user_metadata.full_name || user.user_metadata.user_name || null,
           avatar_url: user.user_metadata.avatar_url || null,
         },
-        { onConflict: "user_id", ignoreDuplicates: true },
+        { onConflict: "user_id" },
       );
 
       if (error) {
         console.error("Profile bootstrap error:", error);
       }
+
+      await refreshProfile();
     };
 
     ensureProfile()
@@ -110,9 +152,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => {
       active = false;
     };
-  }, [authLoaded, userLoaded, user]);
+  }, [authLoaded, userLoaded, user, refreshProfile]);
 
   const loading = !authLoaded || !userLoaded || !profileReady;
+  const onboardingComplete = Boolean(profile?.onboarding_complete);
 
   const signInWithGoogle = async () => {
     await clerk.redirectToSignIn({
@@ -125,7 +168,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ session: null, user, loading, signInWithGoogle, signOut }}>
+    <AuthContext.Provider
+      value={{
+        session: null,
+        user,
+        profile,
+        onboardingComplete,
+        loading,
+        refreshProfile,
+        signInWithGoogle,
+        signOut,
+      }}
+    >
       {children}
     </AuthContext.Provider>
   );

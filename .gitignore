@@ -30,3 +30,6 @@ supabase/.temp/
 # Python
 __pycache__/
 *.pyc
+
+# Generated run artifacts
+doc/runs/

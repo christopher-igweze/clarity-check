@@ -20,11 +20,14 @@ class ContextStore:
         file:<path>         — raw file content
         tree                — repo file tree listing
         findings:scanner    — Scanner agent's raw findings
+        findings:evolution  — Evolution agent's behavioral findings
         findings:security   — Security agent's validated findings
         probe:results       — Builder agent's dynamic probe results
         plan:actions        — Planner agent's action items
         education:cards     — Educator agent's cards
         charter             — Project charter from vision intake
+        project_intake      — Structured 5-question intake payload
+        primer              — Primer summary/context payload
     """
 
     def __init__(self, scan_id: UUID) -> None:

@@ -69,12 +69,18 @@ class ScannerAgent(BaseVibe2ProdAgent):
         # Build the prompt with any available context
         charter = self.context.get("charter")
         vibe_prompt = self.context.get("vibe_prompt", "")
+        project_intake = self.context.get("project_intake")
+        primer = self.context.get("primer")
 
         extra = ""
         if charter:
             extra += f"\n\nProject Charter:\n{json.dumps(charter, indent=2)}"
         if vibe_prompt:
             extra += f"\n\nOriginal Vibe Prompt:\n{vibe_prompt}"
+        if project_intake:
+            extra += f"\n\nProject Intake:\n{json.dumps(project_intake, indent=2)}"
+        if primer:
+            extra += f"\n\nPrimer Context:\n{json.dumps(primer, indent=2)}"
 
         prompt = (
             "Audit the repository at $WORKSPACE_DIR. "

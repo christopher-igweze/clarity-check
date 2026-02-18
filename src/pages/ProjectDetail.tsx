@@ -14,14 +14,12 @@ interface Project {
   repo_url: string;
   repo_name: string | null;
   latest_health_score: number | null;
-  latest_scan_tier: string | null;
   scan_count: number;
   vibe_prompt: string | null;
 }
 
 interface ScanReport {
   id: string;
-  scan_tier: string;
   status: string;
   health_score: number | null;
   security_score: number | null;
@@ -132,18 +130,14 @@ const ProjectDetail = () => {
             <h1 className="text-3xl font-bold mb-1">{project.repo_name || project.repo_url}</h1>
             <p className="text-muted-foreground font-mono text-sm">{project.repo_url}</p>
             <div className="flex items-center gap-2 mt-2">
-              {project.latest_scan_tier && (
-                <Badge variant="outline" className="text-xs">
-                  {project.latest_scan_tier === "surface" ? "⚡ Surface" : "🔬 Deep"}
-                </Badge>
-              )}
+              <Badge variant="outline" className="text-xs">🔬 Deep Audit</Badge>
               <span className="text-xs text-muted-foreground">{project.scan_count} scan{project.scan_count !== 1 ? "s" : ""}</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
             <Button
-              onClick={() => navigate("/scan/live", {
-                state: { projectId: project.id, repoUrl: project.repo_url, tier: project.latest_scan_tier || "surface" },
+              onClick={() => navigate("/scan/new", {
+                state: { repoUrl: project.repo_url, vibePrompt: project.vibe_prompt || undefined },
               })}
               className="neon-glow-green"
             >
@@ -244,14 +238,12 @@ const ProjectDetail = () => {
                   <span className={`font-mono font-bold text-lg ${scoreColor(scan.health_score)}`}>
                     {scan.health_score ?? "—"}
                   </span>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <Badge variant="outline" className="text-[10px]">
-                        {scan.scan_tier === "surface" ? "⚡" : "🔬"} {scan.scan_tier}
-                      </Badge>
-                      <Badge variant={scan.status === "completed" ? "default" : "secondary"} className="text-[10px]">
-                        {scan.status}
-                      </Badge>
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-[10px]">🔬 deep</Badge>
+                        <Badge variant={scan.status === "completed" ? "default" : "secondary"} className="text-[10px]">
+                          {scan.status}
+                        </Badge>
                     </div>
                     {scan.health_score !== null && (
                       <div className="flex items-center gap-3 mt-1 text-xs text-muted-foreground">

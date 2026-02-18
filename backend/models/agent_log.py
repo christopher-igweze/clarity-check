@@ -16,11 +16,15 @@ class LogLevel(str, Enum):
 
 
 class AgentName(str, Enum):
+    primer = "Agent_Primer"
     scanner = "Agent_Scanner"
+    evolution = "Agent_Evolution"
     builder = "Agent_Builder"
     security = "Agent_Security"
     planner = "Agent_Planner"
     educator = "Agent_Educator"
+    implementer = "Agent_Implementer"
+    verifier = "Agent_Verifier"
     orchestrator = "Orchestrator"
 
 

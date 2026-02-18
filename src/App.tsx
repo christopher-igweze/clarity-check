@@ -17,6 +17,7 @@ import SignInPage from "./pages/SignInPage";
 import SignUpPage from "./pages/SignUpPage";
 import DevDiagnostics from "./pages/DevDiagnostics";
 import NotFound from "./pages/NotFound";
+import OrgOnboarding from "./pages/OrgOnboarding";
 
 const queryClient = new QueryClient();
 
@@ -32,6 +33,7 @@ const App = () => (
             <Route path="/sign-in/*" element={<SignInPage />} />
             <Route path="/sign-up/*" element={<SignUpPage />} />
             <Route path="/dev/diag" element={<ProtectedRoute><DevDiagnostics /></ProtectedRoute>} />
+            <Route path="/onboarding/org" element={<ProtectedRoute><OrgOnboarding /></ProtectedRoute>} />
             <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
             <Route path="/scan/new" element={<ProtectedRoute><NewScan /></ProtectedRoute>} />
             <Route path="/scan/live" element={<ProtectedRoute><ScanLive /></ProtectedRoute>} />

@@ -75,6 +75,7 @@ class PlannerAgent(BaseVibe2ProdAgent):
         self._log("Generating remediation plan from all findings...")
 
         scanner = self.context.get("findings:scanner", [])
+        evolution = self.context.get("findings:evolution", [])
         builder = self.context.get("findings:builder", [])
         probes = self.context.get("probe:results", [])
         verdicts = self.context.get("findings:security_verdicts", [])
@@ -83,6 +84,7 @@ class PlannerAgent(BaseVibe2ProdAgent):
         prompt = (
             "Create a prioritised remediation plan based on these inputs.\n\n"
             f"Scanner findings:\n{json.dumps(scanner, indent=2)}\n\n"
+            f"Evolution findings:\n{json.dumps(evolution, indent=2)}\n\n"
             f"Builder findings:\n{json.dumps(builder, indent=2)}\n\n"
             f"Probe results:\n{json.dumps(probes, indent=2)}\n\n"
             f"Security verdicts:\n{json.dumps(verdicts, indent=2)}\n\n"
@@ -94,9 +96,10 @@ class PlannerAgent(BaseVibe2ProdAgent):
 
         # If the planner returns empty/invalid JSON but there are findings to act on,
         # retry with a simpler, stricter prompt containing only confirmed findings.
-        if not action_items and (scanner or builder or new_sec):
+        if not action_items and (scanner or evolution or builder or new_sec):
             confirmed = self._confirmed_findings(
                 scanner=scanner,
+                evolution=evolution,
                 builder=builder,
                 verdicts=verdicts,
                 new_sec=new_sec,
@@ -138,12 +141,13 @@ class PlannerAgent(BaseVibe2ProdAgent):
     def _confirmed_findings(
         *,
         scanner: list,
+        evolution: list,
         builder: list,
         verdicts: list,
         new_sec: list,
     ) -> list:
         """Derive confirmed findings by applying Security verdicts to upstream findings."""
-        all_findings = list(scanner or []) + list(builder or [])
+        all_findings = list(scanner or []) + list(evolution or []) + list(builder or [])
         by_id = {str(f.get("id")): f for f in all_findings if isinstance(f, dict)}
 
         confirmed_ids = set()

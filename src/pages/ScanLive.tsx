@@ -27,12 +27,14 @@ const ScanLive = () => {
   const state = location.state as {
     scanId: string;
     repoUrl: string;
+    quotaRemaining?: number | null;
   } | null;
 
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [status, setStatus] = useState<"scanning" | "completed" | "error">("scanning");
   const [sequenceComplete, setSequenceComplete] = useState(false);
   const [finalHealthScore, setFinalHealthScore] = useState<number | null>(null);
+  const [quotaRemaining, setQuotaRemaining] = useState<number | null>(state?.quotaRemaining ?? null);
   const [reportId, setReportId] = useState<string | null>(state?.scanId ?? null);
   const terminalRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef(status);
@@ -95,12 +97,14 @@ const ScanLive = () => {
 
         if (event === "scan_complete") {
           const score = typeof data.health_score === "number" ? data.health_score : null;
+          const remaining = typeof data.quota_remaining === "number" ? data.quota_remaining : null;
           setFinalHealthScore(score);
+          setQuotaRemaining(remaining);
           setReportId(state.scanId);
           setStatus("completed");
           addLog({
             agent,
-            message: `Audit complete. Health score: ${score ?? "N/A"}/100`,
+            message: `Audit complete. Health score: ${score ?? "N/A"}/100${remaining !== null ? ` • reports left: ${remaining}` : ""}`,
             type: "summary",
             color: "text-primary",
           });
@@ -225,7 +229,10 @@ const ScanLive = () => {
             </div>
 
             {status === "completed" && reportId && (
-              <div className="mt-6 flex justify-end">
+              <div className="mt-6 flex items-center justify-between gap-4">
+                <span className="text-xs text-muted-foreground">
+                  {quotaRemaining !== null ? `Free reports remaining this month: ${quotaRemaining}` : ""}
+                </span>
                 <Button onClick={() => navigate(`/report/${reportId}`)} className="glow-emerald">
                   View Health Report
                 </Button>

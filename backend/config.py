@@ -1,5 +1,7 @@
 """Application configuration loaded from environment variables."""
 
+from __future__ import annotations
+
 from pydantic_settings import BaseSettings
 from pydantic import Field
 
@@ -44,6 +46,15 @@ class Settings(BaseSettings):
     sandbox_cpu: int = 2
     sandbox_memory_gb: int = 4
     sandbox_disk_gb: int = 8
+
+    # --- Tier 1 (Free) ---
+    tier1_enabled: bool = True
+    tier1_assistant_model: str = "google/gemini-2.5-flash-lite"
+    tier1_loc_cap: int = 50000
+    tier1_monthly_report_cap: int = 10
+    tier1_project_cap: int = 3
+    tier1_index_ttl_days: int = 30
+    tier1_report_ttl_days: int = 7
 
     # --- Rate Limiting ---
     rate_limit_per_minute: int = 10

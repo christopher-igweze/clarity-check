@@ -2,7 +2,7 @@
 
 The orchestrator:
 1. Provisions a Daytona sandbox
-2. Runs agents in sequence (Scanner → Builder → Security → Planner → Educator)
+2. Runs agents in sequence (Scanner → Evolution → Builder → Security → Planner → Educator)
 3. Passes data between agents via the ContextStore (no token bloat)
 4. Streams all events to the frontend via an SSE callback
 5. Assembles the final AuditReport
@@ -27,12 +27,14 @@ from models.findings import (
     Severity,
     Category,
 )
-from models.scan import ScanTier
+from models.evolution import EvolutionReport
+from models.scan import PrimerResult, ProjectIntake
 from services.context_store import ContextStore
 from services.github import parse_repo_url, get_repo_info
 from sandbox.manager import SandboxManager
 
 from agents.scanner import ScannerAgent
+from agents.evolution import EvolutionAgent
 from agents.builder import BuilderAgent
 from agents.security import SecurityAgent
 from agents.planner import PlannerAgent
@@ -48,18 +50,20 @@ class AuditOrchestrator:
         self,
         scan_id: UUID,
         repo_url: str,
-        scan_tier: ScanTier,
         emit: Callable[[AgentLogEntry], Any],
         vibe_prompt: str | None = None,
         project_charter: dict | None = None,
+        project_intake: ProjectIntake | None = None,
+        primer: PrimerResult | None = None,
         github_token: str | None = None,
     ) -> None:
         self.scan_id = scan_id
         self.repo_url = repo_url
-        self.scan_tier = scan_tier
         self.emit = emit
         self.vibe_prompt = vibe_prompt
         self.project_charter = project_charter
+        self.project_intake = project_intake
+        self.primer = primer
         self.github_token = github_token
 
         self.context = ContextStore(scan_id)
@@ -100,6 +104,10 @@ class AuditOrchestrator:
                 self.context.set("vibe_prompt", self.vibe_prompt)
             if self.project_charter:
                 self.context.set("charter", self.project_charter)
+            if self.project_intake:
+                self.context.set("project_intake", self.project_intake.model_dump(mode="json"))
+            if self.primer:
+                self.context.set("primer", self.primer.model_dump(mode="json"))
 
             # ---- 1. Provision sandbox ----
             self._log("Provisioning sandbox environment...")
@@ -126,7 +134,16 @@ class AuditOrchestrator:
             )
             scanner_findings = await scanner.run()
 
-            # ---- 3. Agent_Builder (The SRE) — always runs for deep audit ----
+            # ---- 3. Agent_Evolution (Behavioral analysis) ----
+            evolution = EvolutionAgent(
+                scan_id=self.scan_id,
+                context=self.context,
+                emit=self.emit,
+                workspace_dir=workspace_dir,
+            )
+            evolution_report, evolution_findings = await evolution.run()
+
+            # ---- 4. Agent_Builder (The SRE) ----
             probe_results = []
             builder_findings: list[Finding] = []
 
@@ -138,7 +155,7 @@ class AuditOrchestrator:
             )
             probe_results, builder_findings = await builder.run()
 
-            # ---- 4. Agent_Security (The Gatekeeper) ----
+            # ---- 5. Agent_Security (The Gatekeeper) ----
             security = SecurityAgent(
                 scan_id=self.scan_id,
                 context=self.context,
@@ -147,7 +164,7 @@ class AuditOrchestrator:
             )
             verdicts, new_sec_findings = await security.run()
 
-            # ---- 5. Agent_Planner (The Architect) ----
+            # ---- 6. Agent_Planner (The Architect) ----
             planner = PlannerAgent(
                 scan_id=self.scan_id,
                 context=self.context,
@@ -156,7 +173,7 @@ class AuditOrchestrator:
             )
             action_items = await planner.run()
 
-            # ---- 6. Agent_Educator (The Teacher) ----
+            # ---- 7. Agent_Educator (The Teacher) ----
             educator = EducatorAgent(
                 scan_id=self.scan_id,
                 context=self.context,
@@ -165,13 +182,22 @@ class AuditOrchestrator:
             )
             education_cards = await educator.run()
 
-            # ---- 7. Assemble report ----
-            all_findings = scanner_findings + builder_findings + new_sec_findings
+            # ---- 8. Assemble report ----
+            all_findings = (
+                scanner_findings + evolution_findings + builder_findings + new_sec_findings
+            )
 
-            report = self._assemble_report(all_findings, probe_results)
+            report = self._assemble_report(
+                findings=all_findings,
+                probe_results=probe_results,
+                evolution=evolution_report,
+            )
             report.action_items = action_items
             report.education_cards = education_cards
             report.security_verdicts = verdicts
+            if self.primer:
+                report.primer_summary = self.primer.summary or None
+                report.audit_confidence = self.primer.confidence
 
             self._log(
                 f"Audit complete. Health score: {report.health_score}/100",
@@ -199,7 +225,7 @@ class AuditOrchestrator:
             raise
 
         finally:
-            # ---- 8. Teardown ----
+            # ---- 9. Teardown ----
             await self.sandbox_mgr.destroy(self.scan_id)
             self.context.clear()
             try:
@@ -233,6 +259,7 @@ class AuditOrchestrator:
         self,
         findings: list[Finding],
         probe_results: list,
+        evolution: EvolutionReport | None = None,
     ) -> AuditReport:
         """Calculate scores and build the report."""
         security_score = self._category_score(findings, Category.security)
@@ -257,6 +284,7 @@ class AuditOrchestrator:
             security_score=max(0, min(100, security_score)),
             reliability_score=max(0, min(100, reliability_score)),
             scalability_score=max(0, min(100, scalability_score)),
+            evolution=evolution or EvolutionReport(),
             findings=findings,
             probe_results=probe_results,
         )
