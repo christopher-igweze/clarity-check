@@ -1281,6 +1281,9 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pool-cpu", type=int, default=10)
     parser.add_argument("--pool-memory-gb", type=int, default=10)
     parser.add_argument("--pool-storage-gb", type=int, default=30)
+    parser.add_argument("--sandbox-cpu", type=int, default=MATRIX_SANDBOX_CPU)
+    parser.add_argument("--sandbox-memory-gb", type=int, default=MATRIX_SANDBOX_MEMORY_GB)
+    parser.add_argument("--sandbox-disk-gb", type=int, default=MATRIX_SANDBOX_DISK_GB)
     parser.add_argument("--iterations", type=int, default=5)
     parser.add_argument("--score-target", type=float, default=85.0)
     parser.add_argument(
@@ -1303,9 +1306,9 @@ def main() -> None:
         f"iterations={args.iterations} target_workers={args.target_workers} score_target={args.score_target}"
     )
 
-    settings.sandbox_cpu = MATRIX_SANDBOX_CPU
-    settings.sandbox_memory_gb = MATRIX_SANDBOX_MEMORY_GB
-    settings.sandbox_disk_gb = MATRIX_SANDBOX_DISK_GB
+    settings.sandbox_cpu = max(1, int(args.sandbox_cpu))
+    settings.sandbox_memory_gb = max(1, int(args.sandbox_memory_gb))
+    settings.sandbox_disk_gb = max(1, int(args.sandbox_disk_gb))
 
     easy_repo = RepoTarget(
         label="uuid-easy",
