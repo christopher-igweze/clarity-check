@@ -7,6 +7,7 @@ Sandboxes auto-delete after ``sandbox_timeout_minutes`` of inactivity.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from uuid import UUID
@@ -107,7 +108,25 @@ class SandboxManager:
             raise RuntimeError(f"No sandbox session for scan {scan_id}")
 
         work_dir = cwd or session.repo_path
-        resp = session.sandbox.process.exec(command, cwd=work_dir, timeout=timeout)
+        # The Daytona SDK exec call is synchronous and can occasionally block on HTTP response
+        # reads even after the remote command has completed. Run it off-thread with an outer
+        # asyncio timeout to avoid hanging the whole orchestration loop indefinitely.
+        outer_timeout = max(30, int(timeout) + 30)
+
+        try:
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(
+                    session.sandbox.process.exec,
+                    command,
+                    cwd=work_dir,
+                    timeout=timeout,
+                ),
+                timeout=outer_timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise RuntimeError(
+                f"Sandbox exec response timeout after {outer_timeout}s for command: {command[:120]}"
+            ) from exc
 
         return CommandResult(
             command=command,

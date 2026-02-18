@@ -497,6 +497,11 @@ def _tail(value: str, limit: int = 2400) -> str:
     return value if len(value) <= limit else value[-limit:]
 
 
+def _log(message: str) -> None:
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    print(f"[{ts}] {message}", flush=True)
+
+
 def _slug(value: str) -> str:
     out: list[str] = []
     for ch in str(value).lower():
@@ -772,6 +777,9 @@ async def _preflight_repo(repo: RepoTarget) -> dict:
     started = time.perf_counter()
 
     async def run_step(cmd: str, cwd: str, timeout: int = 1200) -> dict[str, Any]:
+        _log(
+            f"[preflight:{repo.label}] start step timeout={timeout}s cwd={cwd} cmd={_extract_command_line(cmd)}"
+        )
         step_started = time.perf_counter()
         result = await mgr.exec(scan_id, cmd, cwd=cwd, timeout=timeout)
         row = {
@@ -781,28 +789,35 @@ async def _preflight_repo(repo: RepoTarget) -> dict:
             "duration_ms": int((time.perf_counter() - step_started) * 1000),
             "stdout_tail": _tail(result.stdout, 4000),
         }
+        _log(
+            f"[preflight:{repo.label}] end step exit={row['exit_code']} duration_ms={row['duration_ms']}"
+        )
         steps.append(row)
         return row
 
     ok = False
     error = None
     try:
+        _log(f"[preflight:{repo.label}] provisioning sandbox for {repo.repo_url}")
         await mgr.provision(scan_id, info.clone_url)
         setup = await run_step(
             "apt-get update -y && apt-get install -y git nodejs npm && "
             "python3 -m pip install --no-input --upgrade pip",
             cwd="/home/daytona",
-            timeout=1800,
+            timeout=900,
         )
         if setup["exit_code"] != 0:
             raise RuntimeError("preflight setup failed")
-        install = await run_step(repo.install_cmd, cwd="/home/daytona/repo", timeout=1800)
-        tests = await run_step(repo.test_cmd, cwd="/home/daytona/repo", timeout=1800)
+        install = await run_step(repo.install_cmd, cwd="/home/daytona/repo", timeout=600)
+        tests = await run_step(repo.test_cmd, cwd="/home/daytona/repo", timeout=600)
         ok = install["exit_code"] == 0 and tests["exit_code"] == 0
+        _log(f"[preflight:{repo.label}] completed ok={ok}")
     except Exception as exc:  # noqa: BLE001
         error = str(exc)
         ok = False
+        _log(f"[preflight:{repo.label}] failed: {error}")
     finally:
+        _log(f"[preflight:{repo.label}] destroying sandbox")
         await mgr.destroy(scan_id)
 
     return {
@@ -836,6 +851,9 @@ async def _run_combo(repo: RepoTarget, model: ModelTarget, score_target: float) 
         cwd: str = "/home/daytona",
         timeout: int = 1200,
     ) -> dict[str, Any]:
+        _log(
+            f"[combo:{repo.label}:{model.label}] start step timeout={timeout}s cwd={cwd} cmd={_extract_command_line(cmd)}"
+        )
         step_started = time.perf_counter()
         result = await mgr.exec(scan_id, cmd, cwd=cwd, timeout=timeout)
         row = {
@@ -845,6 +863,9 @@ async def _run_combo(repo: RepoTarget, model: ModelTarget, score_target: float) 
             "duration_ms": int((time.perf_counter() - step_started) * 1000),
             "stdout_tail": _tail(result.stdout, 5000),
         }
+        _log(
+            f"[combo:{repo.label}:{model.label}] end step exit={row['exit_code']} duration_ms={row['duration_ms']}"
+        )
         steps.append(row)
         return row
 
@@ -864,7 +885,7 @@ async def _run_combo(repo: RepoTarget, model: ModelTarget, score_target: float) 
     }
 
     try:
-        print(f"[start] {repo.label} :: {model.model}", flush=True)
+        _log(f"[combo:{repo.label}:{model.label}] provisioning sandbox for {repo.repo_url}")
         await mgr.provision(scan_id, info.clone_url)
         await mgr.upload_file(scan_id, "/home/daytona/quick_scan.py", LOCAL_SCAN_SCRIPT.encode("utf-8"))
         await mgr.upload_file(scan_id, "/home/daytona/openhands_runner.py", OPENHANDS_RUNNER.encode("utf-8"))
@@ -1025,16 +1046,16 @@ async def _run_combo(repo: RepoTarget, model: ModelTarget, score_target: float) 
                 },
             }
         )
-        print(
-            f"[done] {repo.label} :: {model.model} :: total={score['weighted_total']} gate_failed={score['hard_gate_failed']}",
-            flush=True,
+        _log(
+            f"[combo:{repo.label}:{model.label}] done total={score['weighted_total']} gate_failed={score['hard_gate_failed']}"
         )
     except Exception as exc:  # noqa: BLE001
         final_report["ok"] = False
         final_report["error"] = str(exc)
         final_report["duration_ms"] = int((time.perf_counter() - started) * 1000)
-        print(f"[error] {repo.label} :: {model.model} :: {exc}", flush=True)
+        _log(f"[combo:{repo.label}:{model.label}] error: {exc}")
     finally:
+        _log(f"[combo:{repo.label}:{model.label}] destroying sandbox")
         await mgr.destroy(scan_id)
     return final_report
 
@@ -1222,6 +1243,10 @@ def main() -> None:
     args = _parse_args()
     RUNS_DIR.mkdir(parents=True, exist_ok=True)
     ts = _now_ts()
+    _log(
+        "matrix run start "
+        f"iterations={args.iterations} target_workers={args.target_workers} score_target={args.score_target}"
+    )
 
     settings.sandbox_cpu = MATRIX_SANDBOX_CPU
     settings.sandbox_memory_gb = MATRIX_SANDBOX_MEMORY_GB
@@ -1239,24 +1264,35 @@ def main() -> None:
         install_cmd="npm install --silent",
         test_cmd="npm test --silent",
     )
+    medium_install_cmd = (
+        "python3 -m pip install --disable-pip-version-check --no-input -q -e . "
+        "> /tmp/preflight-install.log 2>&1 && "
+        "tail -n 80 /tmp/preflight-install.log || "
+        "(tail -n 200 /tmp/preflight-install.log; exit 1)"
+    )
+    medium_test_cmd = (
+        "python3 -m pytest -q > /tmp/preflight-test.log 2>&1 && "
+        "tail -n 120 /tmp/preflight-test.log || "
+        "(tail -n 300 /tmp/preflight-test.log; exit 1)"
+    )
     medium_candidates = [
         RepoTarget(
             label="requests-medium",
             repo_url="https://github.com/psf/requests",
-            install_cmd="python3 -m pip install --no-input -e .",
-            test_cmd="python3 -m pytest -q",
+            install_cmd=medium_install_cmd,
+            test_cmd=medium_test_cmd,
         ),
         RepoTarget(
             label="httpx-medium",
             repo_url="https://github.com/encode/httpx",
-            install_cmd="python3 -m pip install --no-input -e .",
-            test_cmd="python3 -m pytest -q",
+            install_cmd=medium_install_cmd,
+            test_cmd=medium_test_cmd,
         ),
         RepoTarget(
             label="flask-medium",
             repo_url="https://github.com/pallets/flask",
-            install_cmd="python3 -m pip install --no-input -e .",
-            test_cmd="python3 -m pytest -q",
+            install_cmd=medium_install_cmd,
+            test_cmd=medium_test_cmd,
         ),
     ]
     models = [
@@ -1287,6 +1323,10 @@ def main() -> None:
     )
     if resource_cap <= 0:
         raise RuntimeError("resource worker cap resolved to zero")
+    _log(
+        f"resource cap computed={resource_cap} with sandbox={settings.sandbox_cpu}/{settings.sandbox_memory_gb}/{settings.sandbox_disk_gb} "
+        f"pool={args.pool_cpu}/{args.pool_memory_gb}/{args.pool_storage_gb}"
+    )
 
     payload: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1307,20 +1347,25 @@ def main() -> None:
     }
 
     for iteration in range(1, args.iterations + 1):
+        _log(f"iteration {iteration} start: medium preflight across {len(medium_candidates)} candidates")
         preflight_rows = [_run_preflight_sync(repo) for repo in medium_candidates]
         selected_medium_row = choose_first_healthy_medium(preflight_rows)
         if not selected_medium_row:
+            _log("iteration failed: no healthy medium candidate")
             raise RuntimeError("medium repo environment incompatible after preflight remediation")
         medium_repo = RepoTarget(**selected_medium_row["repo"])
+        _log(f"iteration {iteration} selected medium repo={medium_repo.repo_url}")
 
         repos = [easy_repo, medium_repo, hard_repo]
         combos = [(repo, model) for repo in repos for model in models]
         max_workers = min(args.target_workers, len(combos), resource_cap)
+        _log(f"iteration {iteration} combo_count={len(combos)} max_workers={max_workers}")
         rows: list[dict] = []
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = [pool.submit(_run_combo_sync, repo, model, args.score_target) for repo, model in combos]
             for fut in concurrent.futures.as_completed(futures):
                 rows.append(fut.result())
+        _log(f"iteration {iteration} completed all combos")
 
         model_means = _model_mean_scores(rows)
         hard_gate_failures = sum(1 for row in rows if bool((row.get("scores") or {}).get("hard_gate_failed")))
@@ -1344,8 +1389,13 @@ def main() -> None:
                 "meets_target": meets_target,
             }
         )
+        _log(
+            f"iteration {iteration} summary: hard_gate_failures={hard_gate_failures} "
+            f"model_means={model_means} meets_target={meets_target}"
+        )
 
         if meets_target:
+            _log(f"stopping early at iteration {iteration} because score target met")
             break
 
     json_path = RUNS_DIR / f"daytona-openhands-matrix-{ts}.json"
@@ -1358,6 +1408,7 @@ def main() -> None:
         payload,
     )
 
+    _log(f"matrix run finished json={json_path} md={md_path}")
     print(str(json_path))
     print(str(md_path))
 
