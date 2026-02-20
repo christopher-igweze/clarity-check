@@ -31,6 +31,18 @@ class TaskStatus(str, Enum):
     skipped = "skipped"
 
 
+class GateType(str, Enum):
+    merge = "MERGE_GATE"
+    test = "TEST_GATE"
+    policy = "POLICY_GATE"
+
+
+class GateDecisionStatus(str, Enum):
+    pass_ = "PASS"
+    fail = "FAIL"
+    blocked = "BLOCKED"
+
+
 class ReplanAction(str, Enum):
     continue_ = "CONTINUE"
     modify_dag = "MODIFY_DAG"
@@ -43,7 +55,7 @@ class DagNode(BaseModel):
     title: str
     agent: str
     depends_on: list[str] = Field(default_factory=list)
-    gate: str | None = None
+    gate: GateType | None = None
     status: TaskStatus = TaskStatus.pending
 
 
@@ -82,6 +94,25 @@ class PolicyViolation(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
 
 
+class BuildStatusTransition(BaseModel):
+    transition_id: UUID
+    from_status: BuildStatus
+    to_status: BuildStatus
+    reason: str
+    source: str = "system"
+    created_at: datetime = Field(default_factory=utc_now)
+
+
+class GateDecision(BaseModel):
+    decision_id: UUID
+    build_id: UUID
+    gate: GateType
+    status: GateDecisionStatus
+    reason: str
+    node_id: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class BuildEvent(BaseModel):
     event_type: str
     build_id: UUID
@@ -111,6 +142,8 @@ class BuildRun(BaseModel):
     replan_history: list[ReplanDecision] = Field(default_factory=list)
     debt_items: list[DebtItem] = Field(default_factory=list)
     policy_violations: list[PolicyViolation] = Field(default_factory=list)
+    state_transitions: list[BuildStatusTransition] = Field(default_factory=list)
+    gate_history: list[GateDecision] = Field(default_factory=list)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -121,6 +154,9 @@ class BuildRunSummary(BaseModel):
     status: BuildStatus
     created_at: datetime
     updated_at: datetime
+    task_total: int = 0
+    task_completed: int = 0
+    task_failed: int = 0
 
 
 class BuildCreateRequest(BaseModel):
@@ -132,3 +168,9 @@ class BuildCreateRequest(BaseModel):
 
 class BuildCheckpointRequest(BaseModel):
     reason: str = "manual_checkpoint"
+
+
+class BuildGateDecisionRequest(BaseModel):
+    status: GateDecisionStatus = GateDecisionStatus.pass_
+    reason: str = "manual_gate_decision"
+    node_id: str | None = None

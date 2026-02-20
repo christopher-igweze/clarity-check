@@ -32,6 +32,9 @@ class BuildRouteTests(unittest.TestCase):
         app.include_router(builds.router)
         cls.client = TestClient(app)
 
+    def setUp(self) -> None:
+        builds.limiter.reset()
+
     @staticmethod
     def _create_payload() -> dict:
         return {
@@ -121,6 +124,31 @@ class BuildRouteTests(unittest.TestCase):
         checkpoints = list_resp.json()
         self.assertGreaterEqual(len(checkpoints), 2)  # includes initial build_created checkpoint
         self.assertEqual(checkpoints[-1]["reason"], "test_checkpoint")
+
+    def test_manual_gate_decision_pauses_running_build(self) -> None:
+        create_resp = self.client.post("/v1/builds", json=self._create_payload())
+        self.assertEqual(create_resp.status_code, 200)
+        build_id = create_resp.json()["build_id"]
+
+        gate_resp = self.client.post(
+            f"/v1/builds/{build_id}/gates/TEST_GATE",
+            json={"status": "BLOCKED", "reason": "needs_human_review"},
+        )
+        self.assertEqual(gate_resp.status_code, 200)
+        decision = gate_resp.json()
+        self.assertEqual(decision["gate"], "TEST_GATE")
+        self.assertEqual(decision["status"], "BLOCKED")
+        self.assertEqual(decision["reason"], "needs_human_review")
+
+        build_resp = self.client.get(f"/v1/builds/{build_id}")
+        self.assertEqual(build_resp.status_code, 200)
+        self.assertEqual(build_resp.json()["status"], "paused")
+
+        list_gates_resp = self.client.get(f"/v1/builds/{build_id}/gates")
+        self.assertEqual(list_gates_resp.status_code, 200)
+        gates = list_gates_resp.json()
+        self.assertGreaterEqual(len(gates), 1)
+        self.assertEqual(gates[0]["status"], "BLOCKED")
 
     def test_events_stream_contains_core_lifecycle_events(self) -> None:
         create_resp = self.client.post("/v1/builds", json=self._create_payload())

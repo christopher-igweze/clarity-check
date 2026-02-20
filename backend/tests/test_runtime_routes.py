@@ -35,13 +35,19 @@ class RuntimeRouteTests(unittest.TestCase):
         app.include_router(runtime.router)
         cls.client = TestClient(app)
 
-    def _create_build(self) -> str:
+    def setUp(self) -> None:
+        builds.limiter.reset()
+
+    def _create_build(self, dag: list[dict] | None = None) -> str:
+        payload = {
+            "repo_url": "https://github.com/octocat/Hello-World",
+            "objective": "runtime test build",
+        }
+        if dag is not None:
+            payload["dag"] = dag
         resp = self.client.post(
             "/v1/builds",
-            json={
-                "repo_url": "https://github.com/octocat/Hello-World",
-                "objective": "runtime test build",
-            },
+            json=payload,
         )
         self.assertEqual(resp.status_code, 200)
         return resp.json()["build_id"]
@@ -75,13 +81,60 @@ class RuntimeRouteTests(unittest.TestCase):
 
         build_resp = self.client.get(f"/v1/builds/{build_id}")
         self.assertEqual(build_resp.status_code, 200)
-        self.assertEqual(build_resp.json()["status"], "completed")
+        build_payload = build_resp.json()
+        self.assertEqual(build_payload["status"], "completed")
+        self.assertGreaterEqual(len(build_payload["state_transitions"]), 2)
+
+        transitions = [
+            (row["from_status"], row["to_status"])
+            for row in build_payload["state_transitions"]
+        ]
+        self.assertIn(("pending", "running"), transitions)
+        self.assertIn(("running", "completed"), transitions)
+
+        tasks_resp = self.client.get(f"/v1/builds/{build_id}/tasks")
+        self.assertEqual(tasks_resp.status_code, 200)
+        tasks = tasks_resp.json()
+        self.assertGreaterEqual(len(tasks), 1)
+        self.assertTrue(all(task["status"] == "completed" for task in tasks))
+
+        first_task_id = tasks[0]["task_run_id"]
+        task_resp = self.client.get(f"/v1/builds/{build_id}/tasks/{first_task_id}")
+        self.assertEqual(task_resp.status_code, 200)
+        self.assertEqual(task_resp.json()["status"], "completed")
 
         # Validate event emission from the shared in-memory store by build id.
         events = build_store._events.get(UUID(build_id), [])
         event_types = [entry.event_type for entry in events]
         self.assertIn("TASK_COMPLETED", event_types)
         self.assertIn("BUILD_FINISHED", event_types)
+
+    def test_runtime_tick_records_gate_decision_for_gated_node(self) -> None:
+        build_id = self._create_build(
+            dag=[
+                {"node_id": "scanner", "title": "scan", "agent": "scanner", "depends_on": []},
+                {
+                    "node_id": "merge_gate",
+                    "title": "merge gate",
+                    "agent": "planner",
+                    "depends_on": ["scanner"],
+                    "gate": "MERGE_GATE",
+                },
+            ]
+        )
+        self.client.post(f"/v1/builds/{build_id}/runtime/bootstrap")
+        for _ in range(5):
+            tick_resp = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+            self.assertEqual(tick_resp.status_code, 200)
+            if tick_resp.json().get("finished"):
+                break
+
+        gates_resp = self.client.get(f"/v1/builds/{build_id}/gates")
+        self.assertEqual(gates_resp.status_code, 200)
+        gates = gates_resp.json()
+        self.assertGreaterEqual(len(gates), 1)
+        self.assertEqual(gates[0]["gate"], "MERGE_GATE")
+        self.assertEqual(gates[0]["status"], "PASS")
 
 
 if __name__ == "__main__":

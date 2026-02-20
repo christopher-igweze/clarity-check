@@ -14,9 +14,16 @@ from models.builds import (
     BuildRun,
     BuildRunSummary,
     BuildStatus,
+    BuildStatusTransition,
     DagNode,
+    GateDecision,
+    GateDecisionStatus,
+    GateType,
+    TaskRun,
+    TaskStatus,
     utc_now,
 )
+from orchestration.telemetry import emit_orchestration_event
 
 
 def _default_dag() -> list[DagNode]:
@@ -26,6 +33,21 @@ def _default_dag() -> list[DagNode]:
         DagNode(node_id="security", title="Security review", agent="security", depends_on=["builder"]),
         DagNode(node_id="planner", title="Remediation plan", agent="planner", depends_on=["security"]),
     ]
+
+
+_VALID_STATUS_TRANSITIONS: dict[BuildStatus, set[BuildStatus]] = {
+    BuildStatus.pending: {BuildStatus.running, BuildStatus.aborted},
+    BuildStatus.running: {
+        BuildStatus.paused,
+        BuildStatus.completed,
+        BuildStatus.failed,
+        BuildStatus.aborted,
+    },
+    BuildStatus.paused: {BuildStatus.running, BuildStatus.aborted},
+    BuildStatus.failed: {BuildStatus.running, BuildStatus.aborted},
+    BuildStatus.completed: set(),
+    BuildStatus.aborted: set(),
+}
 
 
 class BuildStore:
@@ -44,13 +66,19 @@ class BuildStore:
                 created_by=user_id,
                 repo_url=request.repo_url,
                 objective=request.objective,
-                status=BuildStatus.running,
+                status=BuildStatus.pending,
                 created_at=now,
                 updated_at=now,
                 dag=request.dag or _default_dag(),
                 metadata=request.metadata,
             )
             self._builds[build_id] = build
+            self._transition_build_status_unlocked(
+                build=build,
+                to_status=BuildStatus.running,
+                reason="build_created",
+                source="system",
+            )
             self._append_event_unlocked(
                 BuildEvent(
                     event_type="BUILD_STARTED",
@@ -83,6 +111,11 @@ class BuildStore:
                 reason="build_created",
                 status=build.status,
             )
+            emit_orchestration_event(
+                event="build_created",
+                build_id=str(build_id),
+                data={"repo_url": request.repo_url, "objective": request.objective},
+            )
             return build
 
     async def get_build(self, build_id: UUID) -> BuildRun | None:
@@ -112,6 +145,13 @@ class BuildStore:
                     status=row.status,
                     created_at=row.created_at,
                     updated_at=row.updated_at,
+                    task_total=len(row.task_runs),
+                    task_completed=sum(
+                        1 for task in row.task_runs if task.status == TaskStatus.completed
+                    ),
+                    task_failed=sum(
+                        1 for task in row.task_runs if task.status == TaskStatus.failed
+                    ),
                 )
                 for row in rows
             ]
@@ -123,9 +163,12 @@ class BuildStore:
                 raise KeyError("build_not_found")
             if build.status in (BuildStatus.completed, BuildStatus.aborted):
                 raise ValueError(f"cannot_resume_{build.status.value}")
-
-            build.status = BuildStatus.running
-            build.updated_at = utc_now()
+            self._transition_build_status_unlocked(
+                build=build,
+                to_status=BuildStatus.running,
+                reason=reason or "manual_resume",
+                source="manual",
+            )
             self._append_event_unlocked(
                 BuildEvent(
                     event_type="BUILD_RESUMED",
@@ -143,6 +186,11 @@ class BuildStore:
                 reason=reason or "manual_resume",
                 status=build.status,
             )
+            emit_orchestration_event(
+                event="build_resumed",
+                build_id=str(build_id),
+                data={"reason": reason or "manual_resume"},
+            )
             return build
 
     async def abort_build(self, build_id: UUID, *, reason: str | None = None) -> BuildRun:
@@ -152,9 +200,12 @@ class BuildStore:
                 raise KeyError("build_not_found")
             if build.status == BuildStatus.completed:
                 raise ValueError("cannot_abort_completed")
-
-            build.status = BuildStatus.aborted
-            build.updated_at = utc_now()
+            self._transition_build_status_unlocked(
+                build=build,
+                to_status=BuildStatus.aborted,
+                reason=reason or "manual_abort",
+                source="manual",
+            )
             self._append_event_unlocked(
                 BuildEvent(
                     event_type="BUILD_ABORTED",
@@ -179,7 +230,324 @@ class BuildStore:
                 reason=reason or "manual_abort",
                 status=build.status,
             )
+            emit_orchestration_event(
+                event="build_aborted",
+                build_id=str(build_id),
+                data={"reason": reason or "manual_abort"},
+            )
             return build
+
+    async def complete_build(self, build_id: UUID, *, reason: str = "runtime_completed") -> BuildRun:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            if build.status == BuildStatus.completed:
+                return build
+            if build.status == BuildStatus.aborted:
+                raise ValueError("cannot_complete_aborted")
+
+            self._transition_build_status_unlocked(
+                build=build,
+                to_status=BuildStatus.completed,
+                reason=reason,
+                source="runtime",
+            )
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type="BUILD_FINISHED",
+                    build_id=build_id,
+                    payload={"final_status": BuildStatus.completed.value},
+                )
+            )
+            self._append_checkpoint_unlocked(
+                build_id=build_id,
+                status=build.status,
+                reason=reason,
+            )
+            self._append_checkpoint_event_unlocked(
+                build_id=build_id,
+                reason=reason,
+                status=build.status,
+            )
+            emit_orchestration_event(
+                event="build_completed",
+                build_id=str(build_id),
+                data={"reason": reason},
+            )
+            return build
+
+    async def fail_build(self, build_id: UUID, *, reason: str = "runtime_failed") -> BuildRun:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            if build.status == BuildStatus.failed:
+                return build
+            if BuildStatus.failed not in _VALID_STATUS_TRANSITIONS.get(build.status, set()):
+                raise ValueError(f"cannot_fail_{build.status.value}")
+
+            self._transition_build_status_unlocked(
+                build=build,
+                to_status=BuildStatus.failed,
+                reason=reason,
+                source="runtime",
+            )
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type="BUILD_FINISHED",
+                    build_id=build_id,
+                    payload={"final_status": BuildStatus.failed.value},
+                )
+            )
+            self._append_checkpoint_unlocked(
+                build_id=build_id,
+                status=build.status,
+                reason=reason,
+            )
+            self._append_checkpoint_event_unlocked(
+                build_id=build_id,
+                reason=reason,
+                status=build.status,
+            )
+            emit_orchestration_event(
+                event="build_failed",
+                build_id=str(build_id),
+                data={"reason": reason},
+            )
+            return build
+
+    async def start_task_run(
+        self,
+        build_id: UUID,
+        *,
+        node_id: str,
+        source: str = "runtime_tick",
+    ) -> TaskRun:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            if not any(node.node_id == node_id for node in build.dag):
+                raise KeyError("dag_node_not_found")
+            if build.status != BuildStatus.running:
+                raise ValueError(f"cannot_start_task_when_{build.status.value}")
+
+            previous_attempt = max(
+                (task.attempt for task in build.task_runs if task.node_id == node_id),
+                default=0,
+            )
+            task_run = TaskRun(
+                task_run_id=uuid4(),
+                node_id=node_id,
+                attempt=previous_attempt + 1,
+                status=TaskStatus.running,
+                started_at=utc_now(),
+            )
+            build.task_runs.append(task_run)
+            self._set_node_status_unlocked(build=build, node_id=node_id, status=TaskStatus.running)
+            build.updated_at = task_run.started_at
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type="TASK_STARTED",
+                    build_id=build_id,
+                    payload={
+                        "node_id": node_id,
+                        "task_run_id": str(task_run.task_run_id),
+                        "attempt": task_run.attempt,
+                        "source": source,
+                    },
+                )
+            )
+            emit_orchestration_event(
+                event="task_started",
+                build_id=str(build_id),
+                node_id=node_id,
+                data={"task_run_id": str(task_run.task_run_id), "attempt": task_run.attempt},
+            )
+            return task_run
+
+    async def finish_task_run(
+        self,
+        build_id: UUID,
+        *,
+        task_run_id: UUID,
+        status: TaskStatus,
+        error: str | None = None,
+        source: str = "runtime_tick",
+    ) -> TaskRun:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+
+            task_run = next(
+                (task for task in build.task_runs if task.task_run_id == task_run_id),
+                None,
+            )
+            if task_run is None:
+                raise KeyError("task_run_not_found")
+            if task_run.status in {TaskStatus.completed, TaskStatus.failed, TaskStatus.skipped}:
+                raise ValueError("task_already_finalized")
+            if status not in {TaskStatus.completed, TaskStatus.failed, TaskStatus.skipped}:
+                raise ValueError("task_final_status_required")
+
+            task_run.status = status
+            task_run.finished_at = utc_now()
+            task_run.error = error
+            build.updated_at = task_run.finished_at
+            self._set_node_status_unlocked(
+                build=build,
+                node_id=task_run.node_id,
+                status=status,
+            )
+            event_type_by_status = {
+                TaskStatus.completed: "TASK_COMPLETED",
+                TaskStatus.failed: "TASK_FAILED",
+                TaskStatus.skipped: "TASK_SKIPPED",
+            }
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type=event_type_by_status[status],
+                    build_id=build_id,
+                    payload={
+                        "node_id": task_run.node_id,
+                        "task_run_id": str(task_run.task_run_id),
+                        "attempt": task_run.attempt,
+                        "error": error,
+                        "source": source,
+                    },
+                )
+            )
+            emit_orchestration_event(
+                event="task_finished",
+                build_id=str(build_id),
+                node_id=task_run.node_id,
+                data={
+                    "task_run_id": str(task_run.task_run_id),
+                    "status": status.value,
+                    "attempt": task_run.attempt,
+                },
+            )
+            return task_run
+
+    async def list_task_runs(
+        self,
+        build_id: UUID,
+        *,
+        node_id: str | None = None,
+        status: TaskStatus | None = None,
+        limit: int = 200,
+    ) -> list[TaskRun]:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            rows = list(build.task_runs)
+            if node_id is not None:
+                rows = [row for row in rows if row.node_id == node_id]
+            if status is not None:
+                rows = [row for row in rows if row.status == status]
+            rows.sort(key=lambda row: row.started_at, reverse=True)
+            return rows[: max(1, min(limit, 500))]
+
+    async def get_task_run(self, build_id: UUID, task_run_id: UUID) -> TaskRun | None:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            return next(
+                (task for task in build.task_runs if task.task_run_id == task_run_id),
+                None,
+            )
+
+    async def record_gate_decision(
+        self,
+        build_id: UUID,
+        *,
+        gate: GateType,
+        status: GateDecisionStatus,
+        reason: str,
+        node_id: str | None = None,
+        source: str = "runtime_tick",
+    ) -> GateDecision:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+
+            decision = GateDecision(
+                decision_id=uuid4(),
+                build_id=build_id,
+                gate=gate,
+                status=status,
+                reason=reason,
+                node_id=node_id,
+            )
+            build.gate_history.append(decision)
+            build.updated_at = decision.created_at
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type=gate.value,
+                    build_id=build_id,
+                    payload={
+                        "decision_id": str(decision.decision_id),
+                        "gate": gate.value,
+                        "status": status.value,
+                        "reason": reason,
+                        "node_id": node_id,
+                        "source": source,
+                    },
+                )
+            )
+            emit_orchestration_event(
+                event="gate_decision",
+                build_id=str(build_id),
+                node_id=node_id,
+                data={"gate": gate.value, "status": status.value, "reason": reason},
+            )
+
+            if status == GateDecisionStatus.blocked:
+                if BuildStatus.paused in _VALID_STATUS_TRANSITIONS.get(build.status, set()):
+                    self._transition_build_status_unlocked(
+                        build=build,
+                        to_status=BuildStatus.paused,
+                        reason=f"{gate.value}:{reason}",
+                        source="gate",
+                    )
+            if status == GateDecisionStatus.fail:
+                if BuildStatus.failed in _VALID_STATUS_TRANSITIONS.get(build.status, set()):
+                    self._transition_build_status_unlocked(
+                        build=build,
+                        to_status=BuildStatus.failed,
+                        reason=f"{gate.value}:{reason}",
+                        source="gate",
+                    )
+                    self._append_event_unlocked(
+                        BuildEvent(
+                            event_type="BUILD_FINISHED",
+                            build_id=build_id,
+                            payload={"final_status": BuildStatus.failed.value},
+                        )
+                    )
+            return decision
+
+    async def list_gate_decisions(
+        self,
+        build_id: UUID,
+        *,
+        gate: GateType | None = None,
+        limit: int = 200,
+    ) -> list[GateDecision]:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            rows = list(build.gate_history)
+            if gate is not None:
+                rows = [row for row in rows if row.gate == gate]
+            rows.sort(key=lambda row: row.created_at, reverse=True)
+            return rows[: max(1, min(limit, 500))]
 
     async def create_checkpoint(
         self,
@@ -269,6 +637,69 @@ class BuildStore:
                 },
             )
         )
+
+    def _set_node_status_unlocked(
+        self,
+        *,
+        build: BuildRun,
+        node_id: str,
+        status: TaskStatus,
+    ) -> None:
+        for node in build.dag:
+            if node.node_id == node_id:
+                node.status = status
+                return
+
+    def _transition_build_status_unlocked(
+        self,
+        *,
+        build: BuildRun,
+        to_status: BuildStatus,
+        reason: str,
+        source: str,
+    ) -> BuildStatusTransition | None:
+        from_status = build.status
+        if from_status == to_status:
+            return None
+        if to_status not in _VALID_STATUS_TRANSITIONS.get(from_status, set()):
+            raise ValueError(
+                f"invalid_transition_{from_status.value}_to_{to_status.value}"
+            )
+
+        transition = BuildStatusTransition(
+            transition_id=uuid4(),
+            from_status=from_status,
+            to_status=to_status,
+            reason=reason,
+            source=source,
+        )
+        build.status = to_status
+        build.updated_at = transition.created_at
+        build.state_transitions.append(transition)
+        self._append_event_unlocked(
+            BuildEvent(
+                event_type="BUILD_STATUS_CHANGED",
+                build_id=build.build_id,
+                payload={
+                    "transition_id": str(transition.transition_id),
+                    "from_status": from_status.value,
+                    "to_status": to_status.value,
+                    "reason": reason,
+                    "source": source,
+                },
+            )
+        )
+        emit_orchestration_event(
+            event="build_status_changed",
+            build_id=str(build.build_id),
+            data={
+                "from_status": from_status.value,
+                "to_status": to_status.value,
+                "reason": reason,
+                "source": source,
+            },
+        )
+        return transition
 
 
 build_store = BuildStore()
