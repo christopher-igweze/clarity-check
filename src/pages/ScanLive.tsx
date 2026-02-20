@@ -3,10 +3,13 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { Shield, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
+  abortBuildRun,
   bootstrapBuildRuntime,
   getBuildRun,
+  resumeBuildRun,
   streamBuildEvents,
   streamScanStatus,
+  submitReplanDecision,
   tickBuildRuntime,
 } from "@/lib/api";
 import { ScanSequence } from "@/components/ScanSequence";
@@ -43,6 +46,8 @@ const ScanLive = () => {
   const [finalHealthScore, setFinalHealthScore] = useState<number | null>(null);
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(state?.quotaRemaining ?? null);
   const [reportId, setReportId] = useState<string | null>(state?.scanId ?? null);
+  const [buildRunStatus, setBuildRunStatus] = useState<string>("running");
+  const [runtimeEpoch, setRuntimeEpoch] = useState(0);
   const terminalRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef(status);
 
@@ -52,6 +57,75 @@ const ScanLive = () => {
 
   const addLog = (entry: LogEntry) => {
     setLogs((prev) => [...prev, entry]);
+  };
+
+  const handleAbortBuild = async () => {
+    if (!state?.buildId) return;
+    try {
+      const resp = await abortBuildRun({ buildId: state.buildId, reason: "manual_abort_from_scan_live" });
+      setBuildRunStatus(resp.status);
+      setStatus("error");
+      addLog({
+        agent: "System",
+        message: "Build aborted by operator.",
+        type: "system",
+        color: "text-muted-foreground",
+      });
+    } catch (err) {
+      addLog({
+        agent: "System",
+        message: `Abort failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        type: "error",
+        color: "text-neon-red",
+      });
+    }
+  };
+
+  const handleResumeBuild = async () => {
+    if (!state?.buildId) return;
+    try {
+      const resp = await resumeBuildRun({ buildId: state.buildId, reason: "manual_resume_from_scan_live" });
+      setBuildRunStatus(resp.status);
+      setStatus("scanning");
+      addLog({
+        agent: "System",
+        message: "Build resumed.",
+        type: "system",
+        color: "text-muted-foreground",
+      });
+      setRuntimeEpoch((value) => value + 1);
+    } catch (err) {
+      addLog({
+        agent: "System",
+        message: `Resume failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        type: "error",
+        color: "text-neon-red",
+      });
+    }
+  };
+
+  const handleReduceScope = async () => {
+    if (!state?.buildId) return;
+    try {
+      await submitReplanDecision({
+        buildId: state.buildId,
+        action: "REDUCE_SCOPE",
+        reason: "manual_scope_reduction_from_scan_live",
+      });
+      addLog({
+        agent: "Orchestrator",
+        message: "Replan submitted: reduce scope.",
+        type: "system",
+        color: "text-muted-foreground",
+      });
+    } catch (err) {
+      addLog({
+        agent: "System",
+        message: `Replan failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+        type: "error",
+        color: "text-neon-red",
+      });
+    }
   };
 
   useEffect(() => {
@@ -92,13 +166,19 @@ const ScanLive = () => {
             payload.message ||
             (typeof data.reason === "string" ? data.reason : `${event} event received`);
 
+          if (event === "BUILD_STATUS_CHANGED" && typeof data.to_status === "string") {
+            setBuildRunStatus(data.to_status);
+          }
+
           if (event === "BUILD_FINISHED") {
-            setStatus("completed");
+            const finalStatus = String(data.final_status || "completed").toLowerCase();
+            setBuildRunStatus(finalStatus);
+            setStatus(finalStatus === "completed" ? "completed" : "error");
             addLog({
               agent: "Orchestrator",
-              message: `Build finished (${String((data.final_status || "completed")).toLowerCase()}).`,
-              type: "summary",
-              color: "text-primary",
+              message: `Build finished (${finalStatus}).`,
+              type: finalStatus === "completed" ? "summary" : "error",
+              color: finalStatus === "completed" ? "text-primary" : "text-neon-red",
             });
             return;
           }
@@ -137,6 +217,7 @@ const ScanLive = () => {
           await bootstrapBuildRuntime(buildId);
           for (let i = 0; i < 200 && !cancelled; i += 1) {
             const stateResp = await getBuildRun(buildId);
+            setBuildRunStatus(stateResp.status);
             if (["completed", "failed", "aborted"].includes(stateResp.status)) {
               if (stateResp.status === "completed") {
                 setStatus("completed");
@@ -252,7 +333,7 @@ const ScanLive = () => {
     return () => {
       cancelled = true;
     };
-  }, [state?.scanId, state?.buildId]);
+  }, [state?.scanId, state?.buildId, runtimeEpoch]);
 
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
@@ -307,6 +388,27 @@ const ScanLive = () => {
             <p className="text-sm text-muted-foreground mb-6">
               {state?.repoUrl && <span className="font-mono text-xs text-muted-foreground/60">{state.repoUrl}</span>}
             </p>
+
+            {state?.buildId && (
+              <div className="mb-4 flex flex-wrap items-center gap-2">
+                <span className="text-xs font-mono text-muted-foreground">build status: {buildRunStatus}</span>
+                {buildRunStatus === "running" && (
+                  <>
+                    <Button size="sm" variant="outline" onClick={handleReduceScope}>
+                      Reduce Scope
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={handleAbortBuild}>
+                      Abort Build
+                    </Button>
+                  </>
+                )}
+                {(buildRunStatus === "paused" || buildRunStatus === "failed") && (
+                  <Button size="sm" variant="outline" onClick={handleResumeBuild}>
+                    Resume Build
+                  </Button>
+                )}
+              </div>
+            )}
 
             <div className="glass rounded-xl overflow-hidden">
               <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5">
