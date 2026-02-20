@@ -284,6 +284,15 @@ export type BuildStatusEvent = {
   };
 };
 
+export type BuildReplanAction = "CONTINUE" | "MODIFY_DAG" | "REDUCE_SCOPE" | "ABORT";
+
+export type ReplanDecisionResponse = {
+  decision_id: string;
+  action: BuildReplanAction;
+  reason: string;
+  created_at: string;
+};
+
 export async function streamScanStatus({
   scanId,
   onEvent,
@@ -484,6 +493,68 @@ export async function getBuildRun(buildId: string): Promise<{ status: string }> 
   }
   const data = await resp.json();
   return { status: data.status as string };
+}
+
+export async function resumeBuildRun({
+  buildId,
+  reason,
+}: {
+  buildId: string;
+  reason?: string;
+}): Promise<{ status: string }> {
+  const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}/resume`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({ reason: reason || "manual_resume_from_ui" }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to resume build");
+  }
+  const data = await resp.json();
+  return { status: data.status as string };
+}
+
+export async function abortBuildRun({
+  buildId,
+  reason,
+}: {
+  buildId: string;
+  reason?: string;
+}): Promise<{ status: string }> {
+  const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}/abort`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({ reason: reason || "manual_abort_from_ui" }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to abort build");
+  }
+  const data = await resp.json();
+  return { status: data.status as string };
+}
+
+export async function submitReplanDecision({
+  buildId,
+  action,
+  reason,
+}: {
+  buildId: string;
+  action: BuildReplanAction;
+  reason: string;
+}): Promise<ReplanDecisionResponse> {
+  const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}/replan`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      action,
+      reason,
+      replacement_nodes: [],
+    }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to submit replan decision");
+  }
+  return (await resp.json()) as ReplanDecisionResponse;
 }
 
 export async function bootstrapBuildRuntime(buildId: string): Promise<{ runtimeId: string }> {
