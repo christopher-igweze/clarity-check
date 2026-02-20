@@ -2,7 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Shield, CheckCircle2, AlertTriangle } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { streamScanStatus } from "@/lib/api";
+import {
+  bootstrapBuildRuntime,
+  getBuildRun,
+  streamBuildEvents,
+  streamScanStatus,
+  tickBuildRuntime,
+} from "@/lib/api";
 import { ScanSequence } from "@/components/ScanSequence";
 
 interface LogEntry {
@@ -26,6 +32,7 @@ const ScanLive = () => {
   const location = useLocation();
   const state = location.state as {
     scanId: string;
+    buildId?: string;
     repoUrl: string;
     quotaRemaining?: number | null;
   } | null;
@@ -54,11 +61,11 @@ const ScanLive = () => {
   }, [logs]);
 
   useEffect(() => {
-    if (!state?.scanId) {
+    if (!state?.scanId && !state?.buildId) {
       setStatus("error");
       addLog({
         agent: "System",
-        message: "Missing scan id. Start a scan from the New Scan page.",
+        message: "Missing scan/build id. Start a scan from the New Scan page.",
         type: "error",
         color: "text-neon-red",
       });
@@ -67,94 +74,185 @@ const ScanLive = () => {
 
     let cancelled = false;
 
-    addLog({
-      agent: "System",
-      message: `Connected to scan ${state.scanId}. Streaming agent events...`,
-      type: "system",
-      color: "text-muted-foreground",
-    });
+    if (state?.buildId) {
+      const buildId = state.buildId;
+      addLog({
+        agent: "System",
+        message: `Connected to build ${buildId}. Running control-plane orchestration...`,
+        type: "system",
+        color: "text-muted-foreground",
+      });
 
-    streamScanStatus({
-      scanId: state.scanId,
-      onEvent: ({ event, payload }) => {
+      streamBuildEvents({
+        buildId,
+        onEvent: ({ event, payload }) => {
+          if (cancelled) return;
+          const data = payload.payload || {};
+          const message =
+            payload.message ||
+            (typeof data.reason === "string" ? data.reason : `${event} event received`);
+
+          if (event === "BUILD_FINISHED") {
+            setStatus("completed");
+            addLog({
+              agent: "Orchestrator",
+              message: `Build finished (${String((data.final_status || "completed")).toLowerCase()}).`,
+              type: "summary",
+              color: "text-primary",
+            });
+            return;
+          }
+
+          addLog({
+            agent: "Orchestrator",
+            message,
+            type: event.includes("FAILED") ? "error" : "log",
+            color: event.includes("FAILED") ? "text-neon-red" : "text-muted-foreground",
+          });
+        },
+        onDone: () => {
+          if (cancelled) return;
+          if (statusRef.current === "scanning") {
+            addLog({
+              agent: "System",
+              message: "Build stream closed.",
+              type: "system",
+              color: "text-muted-foreground",
+            });
+          }
+        },
+      }).catch((err) => {
         if (cancelled) return;
+        setStatus("error");
+        addLog({
+          agent: "System",
+          message: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+          type: "error",
+          color: "text-neon-red",
+        });
+      });
 
-        const agent = payload.agent || "Orchestrator";
-        const level = payload.level || "info";
-        const message = payload.message || `${event} event received`;
-        const data = payload.data || {};
-
-        if (event === "finding" && data.title) {
-          const severity = String(data.severity || "unknown").toUpperCase();
-          addLog({
-            agent,
-            message: `[${severity}] ${String(data.title)}${data.file_path ? ` — ${String(data.file_path)}` : ""}`,
-            type: "finding",
-            color: "text-neon-orange",
-          });
-          return;
-        }
-
-        if (event === "scan_complete") {
-          const score = typeof data.health_score === "number" ? data.health_score : null;
-          const remaining = typeof data.quota_remaining === "number" ? data.quota_remaining : null;
-          setFinalHealthScore(score);
-          setQuotaRemaining(remaining);
-          setReportId(state.scanId);
-          setStatus("completed");
-          addLog({
-            agent,
-            message: `Audit complete. Health score: ${score ?? "N/A"}/100${remaining !== null ? ` • reports left: ${remaining}` : ""}`,
-            type: "summary",
-            color: "text-primary",
-          });
-          return;
-        }
-
-        if (event === "scan_error") {
+      (async () => {
+        try {
+          await bootstrapBuildRuntime(buildId);
+          for (let i = 0; i < 200 && !cancelled; i += 1) {
+            const stateResp = await getBuildRun(buildId);
+            if (["completed", "failed", "aborted"].includes(stateResp.status)) {
+              if (stateResp.status === "completed") {
+                setStatus("completed");
+              } else {
+                setStatus("error");
+              }
+              return;
+            }
+            const tick = await tickBuildRuntime(buildId);
+            if (tick.finished) {
+              setStatus("completed");
+              return;
+            }
+            await new Promise((resolve) => setTimeout(resolve, 350));
+          }
+        } catch (err) {
+          if (cancelled) return;
           setStatus("error");
           addLog({
-            agent,
-            message,
+            agent: "System",
+            message: `Runtime tick failed: ${err instanceof Error ? err.message : "Unknown error"}`,
             type: "error",
             color: "text-neon-red",
           });
-          return;
         }
-
-        addLog({
-          agent,
-          message,
-          type: level === "error" ? "error" : "log",
-          color: level === "error" ? "text-neon-red" : agentColors[agent] || "text-muted-foreground",
-        });
-      },
-      onDone: () => {
-        if (cancelled) return;
-        if (statusRef.current === "scanning") {
-          addLog({
-            agent: "System",
-            message: "SSE stream closed.",
-            type: "system",
-            color: "text-muted-foreground",
-          });
-        }
-      },
-    }).catch((err) => {
-      if (cancelled) return;
-      setStatus("error");
+      })();
+    } else if (state?.scanId) {
       addLog({
         agent: "System",
-        message: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
-        type: "error",
-        color: "text-neon-red",
+        message: `Connected to scan ${state.scanId}. Streaming agent events...`,
+        type: "system",
+        color: "text-muted-foreground",
       });
-    });
+
+      streamScanStatus({
+        scanId: state.scanId,
+        onEvent: ({ event, payload }) => {
+          if (cancelled) return;
+
+          const agent = payload.agent || "Orchestrator";
+          const level = payload.level || "info";
+          const message = payload.message || `${event} event received`;
+          const data = payload.data || {};
+
+          if (event === "finding" && data.title) {
+            const severity = String(data.severity || "unknown").toUpperCase();
+            addLog({
+              agent,
+              message: `[${severity}] ${String(data.title)}${data.file_path ? ` — ${String(data.file_path)}` : ""}`,
+              type: "finding",
+              color: "text-neon-orange",
+            });
+            return;
+          }
+
+          if (event === "scan_complete") {
+            const score = typeof data.health_score === "number" ? data.health_score : null;
+            const remaining = typeof data.quota_remaining === "number" ? data.quota_remaining : null;
+            setFinalHealthScore(score);
+            setQuotaRemaining(remaining);
+            setReportId(state.scanId);
+            setStatus("completed");
+            addLog({
+              agent,
+              message: `Audit complete. Health score: ${score ?? "N/A"}/100${remaining !== null ? ` • reports left: ${remaining}` : ""}`,
+              type: "summary",
+              color: "text-primary",
+            });
+            return;
+          }
+
+          if (event === "scan_error") {
+            setStatus("error");
+            addLog({
+              agent,
+              message,
+              type: "error",
+              color: "text-neon-red",
+            });
+            return;
+          }
+
+          addLog({
+            agent,
+            message,
+            type: level === "error" ? "error" : "log",
+            color: level === "error" ? "text-neon-red" : agentColors[agent] || "text-muted-foreground",
+          });
+        },
+        onDone: () => {
+          if (cancelled) return;
+          if (statusRef.current === "scanning") {
+            addLog({
+              agent: "System",
+              message: "SSE stream closed.",
+              type: "system",
+              color: "text-muted-foreground",
+            });
+          }
+        },
+      }).catch((err) => {
+        if (cancelled) return;
+        setStatus("error");
+        addLog({
+          agent: "System",
+          message: `Error: ${err instanceof Error ? err.message : "Unknown error"}`,
+          type: "error",
+          color: "text-neon-red",
+        });
+      });
+    }
 
     return () => {
       cancelled = true;
     };
-  }, [state?.scanId]);
+  }, [state?.scanId, state?.buildId]);
 
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
@@ -235,6 +333,14 @@ const ScanLive = () => {
                 </span>
                 <Button onClick={() => navigate(`/report/${reportId}`)} className="glow-emerald">
                   View Health Report
+                </Button>
+              </div>
+            )}
+
+            {status === "completed" && !reportId && (
+              <div className="mt-6 flex justify-end gap-3">
+                <Button variant="outline" onClick={() => navigate("/dashboard")}>
+                  Back to Dashboard
                 </Button>
               </div>
             )}

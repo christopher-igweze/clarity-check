@@ -6,7 +6,14 @@ import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
-import { getLimits, startAudit, runPrimer, TIER1_ENABLED } from "@/lib/api";
+import {
+  BUILD_CONTROL_PLANE_ENABLED,
+  createBuildRun,
+  getLimits,
+  runPrimer,
+  startAudit,
+  TIER1_ENABLED,
+} from "@/lib/api";
 import { toast } from "@/hooks/use-toast";
 import { RepoSelector } from "@/components/RepoSelector";
 
@@ -172,6 +179,21 @@ const NewScan = () => {
     setLoading(true);
 
     try {
+      if (BUILD_CONTROL_PLANE_ENABLED) {
+        const objective = `Audit ${repoUrl.trim()} for product risk and reliability`;
+        const build = await createBuildRun({
+          repoUrl: repoUrl.trim(),
+          objective,
+        });
+        navigate("/scan/live", {
+          state: {
+            buildId: build.buildId,
+            repoUrl: repoUrl.trim(),
+          },
+        });
+        return;
+      }
+
       const { scanId, quotaRemaining } = await startAudit({
         repoUrl: repoUrl.trim(),
         vibePrompt: vibePrompt || undefined,
