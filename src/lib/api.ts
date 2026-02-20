@@ -669,3 +669,414 @@ export async function streamBuildEvents({
   }
   safeDone();
 }
+
+export type ProgramCampaign = {
+  campaign_id: string;
+  name: string;
+  repos: string[];
+  runs_per_repo: number;
+  created_by: string;
+  created_at: string;
+};
+
+export type ProgramPolicyProfile = {
+  profile_id: string;
+  name: string;
+  blocked_commands: string[];
+  restricted_paths: string[];
+  created_by: string;
+  created_at: string;
+};
+
+export type ProgramPolicyResult = {
+  action: "ALLOW" | "BLOCK";
+  reason: string;
+  violation_code?: string | null;
+};
+
+export type ProgramSecretRef = {
+  secret_id: string;
+  name: string;
+  masked_value: string;
+  cipher_digest: string;
+  created_at: string;
+};
+
+export type ProgramSecretMetadata = {
+  secret_id: string;
+  name: string;
+  cipher_digest: string;
+  cipher_length: number;
+};
+
+export type ProgramCampaignReport = {
+  generated_at: string;
+  summary: {
+    repo_count: number;
+    run_count: number;
+    avg_success_rate: number;
+    max_duration_cv: number;
+    repos: Array<{
+      repo: string;
+      language: string;
+      run_count: number;
+      success_count: number;
+      success_rate: number;
+      mean_duration_ms: number;
+      duration_stddev_ms: number;
+      duration_cv: number;
+    }>;
+  };
+  gate: {
+    passed: boolean;
+    reasons: string[];
+  };
+  rubric: {
+    passed: boolean;
+    release_ready: boolean;
+    score: number;
+    reasons: string[];
+  };
+  recommendations: string[];
+};
+
+export async function createValidationCampaign({
+  name,
+  repos,
+  runsPerRepo,
+}: {
+  name: string;
+  repos: string[];
+  runsPerRepo: number;
+}): Promise<ProgramCampaign> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week7/campaigns`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      name,
+      repos,
+      runs_per_repo: runsPerRepo,
+    }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to create validation campaign");
+  }
+  return (await resp.json()) as ProgramCampaign;
+}
+
+export async function getValidationCampaign(campaignId: string): Promise<ProgramCampaign> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week7/campaigns/${campaignId}`, {
+    method: "GET",
+    headers: {
+      Authorization: (await getAuthHeaders()).Authorization,
+    },
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to fetch validation campaign");
+  }
+  return (await resp.json()) as ProgramCampaign;
+}
+
+export async function ingestCampaignRun({
+  campaignId,
+  repo,
+  language,
+  runId,
+  status,
+  durationMs,
+  findingsTotal,
+}: {
+  campaignId: string;
+  repo: string;
+  language: string;
+  runId: string;
+  status: "completed" | "failed" | "aborted";
+  durationMs: number;
+  findingsTotal?: number;
+}): Promise<{ status: string; run_id: string }> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week8/campaigns/${campaignId}/runs`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      repo,
+      language,
+      run_id: runId,
+      status,
+      duration_ms: durationMs,
+      findings_total: findingsTotal ?? 0,
+    }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to ingest campaign run");
+  }
+  return (await resp.json()) as { status: string; run_id: string };
+}
+
+export async function getCampaignReport(campaignId: string): Promise<ProgramCampaignReport> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week8/campaigns/${campaignId}/report`, {
+    method: "GET",
+    headers: {
+      Authorization: (await getAuthHeaders()).Authorization,
+    },
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to fetch campaign report");
+  }
+  return (await resp.json()) as ProgramCampaignReport;
+}
+
+export async function createPolicyProfile({
+  name,
+  blockedCommands,
+  restrictedPaths,
+}: {
+  name: string;
+  blockedCommands: string[];
+  restrictedPaths: string[];
+}): Promise<ProgramPolicyProfile> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week9/policy-profiles`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      name,
+      blocked_commands: blockedCommands,
+      restricted_paths: restrictedPaths,
+    }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to create policy profile");
+  }
+  return (await resp.json()) as ProgramPolicyProfile;
+}
+
+export async function evaluatePolicyCheck({
+  profileId,
+  command,
+  path,
+  buildId,
+}: {
+  profileId: string;
+  command: string;
+  path?: string;
+  buildId?: string;
+}): Promise<ProgramPolicyResult> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week9/policy-check`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      profile_id: profileId,
+      command,
+      path: path ?? null,
+      build_id: buildId ?? null,
+    }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to evaluate policy check");
+  }
+  return (await resp.json()) as ProgramPolicyResult;
+}
+
+export async function createProgramSecret({
+  name,
+  value,
+}: {
+  name: string;
+  value: string;
+}): Promise<ProgramSecretRef> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week10/secrets`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({ name, value }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to store program secret");
+  }
+  return (await resp.json()) as ProgramSecretRef;
+}
+
+export async function listProgramSecrets(): Promise<ProgramSecretRef[]> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week10/secrets`, {
+    method: "GET",
+    headers: {
+      Authorization: (await getAuthHeaders()).Authorization,
+    },
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to list program secrets");
+  }
+  return (await resp.json()) as ProgramSecretRef[];
+}
+
+export async function getProgramSecretMetadata(secretId: string): Promise<ProgramSecretMetadata> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week10/secrets/${secretId}`, {
+    method: "GET",
+    headers: {
+      Authorization: (await getAuthHeaders()).Authorization,
+    },
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to fetch secret metadata");
+  }
+  return (await resp.json()) as ProgramSecretMetadata;
+}
+
+export async function createIdempotentCheckpoint({
+  buildId,
+  idempotencyKey,
+  reason,
+}: {
+  buildId: string;
+  idempotencyKey: string;
+  reason: string;
+}): Promise<{
+  checkpoint_id: string;
+  replayed: boolean;
+  status: string;
+  reason: string;
+}> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week12/idempotent-checkpoints`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      build_id: buildId,
+      idempotency_key: idempotencyKey,
+      reason,
+    }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to create idempotent checkpoint");
+  }
+  return (await resp.json()) as {
+    checkpoint_id: string;
+    replayed: boolean;
+    status: string;
+    reason: string;
+  };
+}
+
+export async function getProgramSloSummary(): Promise<{
+  total_builds: number;
+  completed_builds: number;
+  failed_builds: number;
+  aborted_builds: number;
+  running_builds: number;
+  success_rate: number;
+  mean_cycle_seconds: number;
+}> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week13/slo-summary`, {
+    method: "GET",
+    headers: {
+      Authorization: (await getAuthHeaders()).Authorization,
+    },
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to fetch SLO summary");
+  }
+  return (await resp.json()) as {
+    total_builds: number;
+    completed_builds: number;
+    failed_builds: number;
+    aborted_builds: number;
+    running_builds: number;
+    success_rate: number;
+    mean_cycle_seconds: number;
+  };
+}
+
+export async function upsertReleaseChecklist(payload: {
+  releaseId: string;
+  securityReview: boolean;
+  sloDashboard: boolean;
+  rollbackTested: boolean;
+  docsComplete: boolean;
+  runbooksReady: boolean;
+}): Promise<{
+  release_id: string;
+  security_review: boolean;
+  slo_dashboard: boolean;
+  rollback_tested: boolean;
+  docs_complete: boolean;
+  runbooks_ready: boolean;
+}> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week14/checklist`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      release_id: payload.releaseId,
+      security_review: payload.securityReview,
+      slo_dashboard: payload.sloDashboard,
+      rollback_tested: payload.rollbackTested,
+      docs_complete: payload.docsComplete,
+      runbooks_ready: payload.runbooksReady,
+    }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to upsert release checklist");
+  }
+  return (await resp.json()) as {
+    release_id: string;
+    security_review: boolean;
+    slo_dashboard: boolean;
+    rollback_tested: boolean;
+    docs_complete: boolean;
+    runbooks_ready: boolean;
+  };
+}
+
+export async function upsertRollbackDrill(payload: {
+  releaseId: string;
+  passed: boolean;
+  durationMinutes: number;
+  issuesFound: string[];
+}): Promise<{
+  release_id: string;
+  passed: boolean;
+  duration_minutes: number;
+  issues_found: string[];
+}> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week15/rollback-drills`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      release_id: payload.releaseId,
+      passed: payload.passed,
+      duration_minutes: payload.durationMinutes,
+      issues_found: payload.issuesFound,
+    }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to upsert rollback drill");
+  }
+  return (await resp.json()) as {
+    release_id: string;
+    passed: boolean;
+    duration_minutes: number;
+    issues_found: string[];
+  };
+}
+
+export async function decideGoLive(payload: {
+  releaseId: string;
+  validationReleaseReady: boolean;
+}): Promise<{
+  release_id: string;
+  status: "GO" | "NO_GO";
+  reasons: string[];
+}> {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/week16/go-live-decision`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      release_id: payload.releaseId,
+      validation_release_ready: payload.validationReleaseReady,
+    }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to compute go-live decision");
+  }
+  return (await resp.json()) as {
+    release_id: string;
+    status: "GO" | "NO_GO";
+    reasons: string[];
+  };
+}

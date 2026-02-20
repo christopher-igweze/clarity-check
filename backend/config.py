@@ -68,6 +68,13 @@ class Settings(BaseSettings):
     # --- Rate Limiting ---
     rate_limit_per_minute: int = 10
 
+    # --- Program Control-Plane Hardening ---
+    # Optional filesystem snapshot for program_store durability.
+    # Leave unset in local dev/tests for purely in-memory behavior.
+    program_store_state_path: str | None = None
+    # Maximum age for idempotency entries to avoid unbounded growth.
+    idempotency_ttl_seconds: int = 86400
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 

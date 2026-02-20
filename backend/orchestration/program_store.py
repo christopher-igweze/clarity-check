@@ -5,14 +5,17 @@ from __future__ import annotations
 import asyncio
 import base64
 import hmac
+import json
 import time
 from hashlib import sha256
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
 from cryptography.fernet import Fernet
 
 from config import settings
+from models.builds import BuildCheckpoint
 from models.program import (
     CampaignRunIngestRequest,
     GoLiveDecision,
@@ -43,19 +46,23 @@ from orchestration.validation import ValidationRun
 
 
 class ProgramStore:
-    def __init__(self) -> None:
+    def __init__(self, *, state_path: str | None = None) -> None:
         self._lock = asyncio.Lock()
         self._campaigns: dict[UUID, ValidationCampaign] = {}
         self._campaign_runs: dict[UUID, dict[str, ValidationRun]] = {}
         self._policy_profiles: dict[UUID, PolicyProfile] = {}
         self._secrets: dict[UUID, SecretRecord] = {}
         self._seen_nonces: dict[str, int] = {}
-        self._idempotent_checkpoints: dict[tuple[UUID, str], Any] = {}
+        self._idempotent_checkpoints: dict[tuple[UUID, str], dict[str, Any]] = {}
         self._release_checklists: dict[str, ReleaseChecklist] = {}
         self._rollback_drills: dict[str, RollbackDrill] = {}
         self._go_live_decisions: dict[str, GoLiveDecision] = {}
         self._fernet = Fernet(self._fernet_key_from_secret(settings.supabase_jwt_secret))
         self._platform_secret = settings.supabase_jwt_secret.encode("utf-8")
+        self._state_path = Path(state_path).expanduser() if state_path else None
+        self._idempotency_ttl_seconds = max(60, int(settings.idempotency_ttl_seconds))
+        if self._state_path:
+            self._load_state()
 
     async def create_campaign(
         self,
@@ -73,6 +80,7 @@ class ProgramStore:
             )
             self._campaigns[campaign.campaign_id] = campaign
             self._campaign_runs[campaign.campaign_id] = {}
+            self._save_state_unlocked()
             return campaign
 
     async def get_campaign(self, campaign_id: UUID) -> ValidationCampaign | None:
@@ -96,6 +104,7 @@ class ProgramStore:
                 findings_total=request.findings_total,
             )
             self._campaign_runs[campaign_id][run.run_id] = run
+            self._save_state_unlocked()
             return run
 
     async def campaign_report(self, campaign_id: UUID) -> ValidationBenchmarkReport:
@@ -120,6 +129,7 @@ class ProgramStore:
                 created_by=user_id,
             )
             self._policy_profiles[profile.profile_id] = profile
+            self._save_state_unlocked()
             return profile
 
     async def evaluate_policy(self, request: PolicyCheckRequest) -> PolicyCheckResult:
@@ -173,6 +183,7 @@ class ProgramStore:
                 created_by=user_id,
             )
             self._secrets[secret_id] = record
+            self._save_state_unlocked()
             return SecretRef(
                 secret_id=secret_id,
                 name=record.name,
@@ -235,6 +246,7 @@ class ProgramStore:
             if nonce in self._seen_nonces:
                 raise ValueError("nonce_replay_detected")
             self._seen_nonces[nonce] = now_ts
+            self._save_state_unlocked()
 
         return PlatformWebhookResponse(status="accepted", nonce=nonce, timestamp=timestamp)
 
@@ -250,18 +262,24 @@ class ProgramStore:
             raise ValueError("idempotency_key_required")
 
         async with self._lock:
+            self._prune_idempotency_unlocked()
             cached = self._idempotent_checkpoints.get(key)
         if cached is not None:
+            checkpoint = BuildCheckpoint.model_validate(cached["checkpoint"])
             return IdempotentCheckpointResult(
-                checkpoint_id=cached.checkpoint_id,
+                checkpoint_id=checkpoint.checkpoint_id,
                 replayed=True,
-                status=cached.status.value,
-                reason=cached.reason,
+                status=checkpoint.status.value,
+                reason=checkpoint.reason,
             )
 
         checkpoint = await build_store.create_checkpoint(build_id, reason=reason)
         async with self._lock:
-            self._idempotent_checkpoints[key] = checkpoint
+            self._idempotent_checkpoints[key] = {
+                "created_ts": int(time.time()),
+                "checkpoint": checkpoint.model_dump(mode="json"),
+            }
+            self._save_state_unlocked()
         return IdempotentCheckpointResult(
             checkpoint_id=checkpoint.checkpoint_id,
             replayed=False,
@@ -311,6 +329,7 @@ class ProgramStore:
                 updated_by=user_id,
             )
             self._release_checklists[request.release_id] = row
+            self._save_state_unlocked()
             return row
 
     async def get_release_checklist(self, release_id: str) -> ReleaseChecklist | None:
@@ -332,6 +351,7 @@ class ProgramStore:
                 updated_by=user_id,
             )
             self._rollback_drills[request.release_id] = row
+            self._save_state_unlocked()
             return row
 
     async def get_rollback_drill(self, release_id: str) -> RollbackDrill | None:
@@ -379,11 +399,204 @@ class ProgramStore:
         )
         async with self._lock:
             self._go_live_decisions[request.release_id] = decision
+            self._save_state_unlocked()
         return decision
 
     async def get_go_live_decision(self, release_id: str) -> GoLiveDecision | None:
         async with self._lock:
             return self._go_live_decisions.get(release_id)
+
+    def _load_state(self) -> None:
+        if self._state_path is None or not self._state_path.exists():
+            return
+        try:
+            raw = json.loads(self._state_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return
+        if not isinstance(raw, dict):
+            return
+
+        campaigns = raw.get("campaigns", {})
+        if isinstance(campaigns, dict):
+            for key, value in campaigns.items():
+                if not isinstance(value, dict):
+                    continue
+                try:
+                    campaign_id = UUID(str(key))
+                    self._campaigns[campaign_id] = ValidationCampaign.model_validate(value)
+                except (ValueError, TypeError):
+                    continue
+
+        campaign_runs = raw.get("campaign_runs", {})
+        if isinstance(campaign_runs, dict):
+            for key, value in campaign_runs.items():
+                if not isinstance(value, dict):
+                    continue
+                try:
+                    campaign_id = UUID(str(key))
+                except ValueError:
+                    continue
+                run_bucket: dict[str, ValidationRun] = {}
+                for run_id, run_value in value.items():
+                    if not isinstance(run_value, dict):
+                        continue
+                    try:
+                        run_bucket[str(run_id)] = ValidationRun.model_validate(run_value)
+                    except (ValueError, TypeError):
+                        continue
+                self._campaign_runs[campaign_id] = run_bucket
+
+        policy_profiles = raw.get("policy_profiles", {})
+        if isinstance(policy_profiles, dict):
+            for key, value in policy_profiles.items():
+                if not isinstance(value, dict):
+                    continue
+                try:
+                    profile_id = UUID(str(key))
+                    self._policy_profiles[profile_id] = PolicyProfile.model_validate(value)
+                except (ValueError, TypeError):
+                    continue
+
+        secrets = raw.get("secrets", {})
+        if isinstance(secrets, dict):
+            for key, value in secrets.items():
+                if not isinstance(value, dict):
+                    continue
+                try:
+                    secret_id = UUID(str(key))
+                    self._secrets[secret_id] = SecretRecord.model_validate(value)
+                except (ValueError, TypeError):
+                    continue
+
+        seen_nonces = raw.get("seen_nonces", {})
+        if isinstance(seen_nonces, dict):
+            for key, value in seen_nonces.items():
+                if isinstance(key, str) and isinstance(value, int):
+                    self._seen_nonces[key] = value
+
+        idempotent = raw.get("idempotent_checkpoints", {})
+        if isinstance(idempotent, dict):
+            for key, value in idempotent.items():
+                if not isinstance(key, str) or not isinstance(value, dict):
+                    continue
+                parts = key.split("::", 1)
+                if len(parts) != 2:
+                    continue
+                try:
+                    build_id = UUID(parts[0])
+                except ValueError:
+                    continue
+                idem_key = parts[1]
+                if not idem_key:
+                    continue
+                checkpoint_raw = value.get("checkpoint")
+                created_ts = value.get("created_ts", 0)
+                if not isinstance(checkpoint_raw, dict) or not isinstance(created_ts, int):
+                    continue
+                self._idempotent_checkpoints[(build_id, idem_key)] = {
+                    "created_ts": created_ts,
+                    "checkpoint": checkpoint_raw,
+                }
+
+        release_checklists = raw.get("release_checklists", {})
+        if isinstance(release_checklists, dict):
+            for key, value in release_checklists.items():
+                if isinstance(key, str) and isinstance(value, dict):
+                    try:
+                        self._release_checklists[key] = ReleaseChecklist.model_validate(value)
+                    except (ValueError, TypeError):
+                        continue
+
+        rollback_drills = raw.get("rollback_drills", {})
+        if isinstance(rollback_drills, dict):
+            for key, value in rollback_drills.items():
+                if isinstance(key, str) and isinstance(value, dict):
+                    try:
+                        self._rollback_drills[key] = RollbackDrill.model_validate(value)
+                    except (ValueError, TypeError):
+                        continue
+
+        decisions = raw.get("go_live_decisions", {})
+        if isinstance(decisions, dict):
+            for key, value in decisions.items():
+                if isinstance(key, str) and isinstance(value, dict):
+                    try:
+                        self._go_live_decisions[key] = GoLiveDecision.model_validate(value)
+                    except (ValueError, TypeError):
+                        continue
+
+        self._prune_idempotency_unlocked()
+
+    def _save_state_unlocked(self) -> None:
+        if self._state_path is None:
+            return
+        payload = self._serialize_state_unlocked()
+        try:
+            parent = self._state_path.parent
+            parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._state_path.with_suffix(f"{self._state_path.suffix}.tmp")
+            tmp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+            tmp_path.replace(self._state_path)
+        except OSError:
+            return
+
+    def _serialize_state_unlocked(self) -> dict[str, Any]:
+        campaigns = {
+            str(key): value.model_dump(mode="json")
+            for key, value in self._campaigns.items()
+        }
+        campaign_runs = {
+            str(key): {
+                run_id: run.model_dump(mode="json")
+                for run_id, run in bucket.items()
+            }
+            for key, bucket in self._campaign_runs.items()
+        }
+        policy_profiles = {
+            str(key): value.model_dump(mode="json")
+            for key, value in self._policy_profiles.items()
+        }
+        secrets = {
+            str(key): value.model_dump(mode="json")
+            for key, value in self._secrets.items()
+        }
+        idempotent = {
+            f"{build_id}::{idem_key}": value
+            for (build_id, idem_key), value in self._idempotent_checkpoints.items()
+        }
+        release_checklists = {
+            key: value.model_dump(mode="json")
+            for key, value in self._release_checklists.items()
+        }
+        rollback_drills = {
+            key: value.model_dump(mode="json")
+            for key, value in self._rollback_drills.items()
+        }
+        go_live_decisions = {
+            key: value.model_dump(mode="json")
+            for key, value in self._go_live_decisions.items()
+        }
+        return {
+            "campaigns": campaigns,
+            "campaign_runs": campaign_runs,
+            "policy_profiles": policy_profiles,
+            "secrets": secrets,
+            "seen_nonces": self._seen_nonces,
+            "idempotent_checkpoints": idempotent,
+            "release_checklists": release_checklists,
+            "rollback_drills": rollback_drills,
+            "go_live_decisions": go_live_decisions,
+        }
+
+    def _prune_idempotency_unlocked(self) -> None:
+        cutoff = int(time.time()) - self._idempotency_ttl_seconds
+        expired_keys = [
+            key
+            for key, value in self._idempotent_checkpoints.items()
+            if int(value.get("created_ts", 0)) < cutoff
+        ]
+        for key in expired_keys:
+            self._idempotent_checkpoints.pop(key, None)
 
     async def _record_policy_violation_if_needed(
         self,
@@ -420,5 +633,4 @@ class ProgramStore:
         return sha256(encrypted_value.encode("utf-8")).hexdigest()[:16]
 
 
-program_store = ProgramStore()
-
+program_store = ProgramStore(state_path=settings.program_store_state_path)

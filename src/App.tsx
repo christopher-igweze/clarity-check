@@ -18,6 +18,7 @@ import SignUpPage from "./pages/SignUpPage";
 import DevDiagnostics from "./pages/DevDiagnostics";
 import NotFound from "./pages/NotFound";
 import OrgOnboarding from "./pages/OrgOnboarding";
+import ProgramOps from "./pages/ProgramOps";
 
 const queryClient = new QueryClient();
 
@@ -37,6 +38,7 @@ const App = () => (
             <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
             <Route path="/scan/new" element={<ProtectedRoute><NewScan /></ProtectedRoute>} />
             <Route path="/scan/live" element={<ProtectedRoute><ScanLive /></ProtectedRoute>} />
+            <Route path="/program-ops" element={<ProtectedRoute><ProgramOps /></ProtectedRoute>} />
             <Route path="/report/:id" element={<ProtectedRoute><Report /></ProtectedRoute>} />
             <Route path="/project/:id" element={<ProtectedRoute><ProjectDetail /></ProtectedRoute>} />
             <Route path="/vision-intake" element={<ProtectedRoute><VisionIntake /></ProtectedRoute>} />
