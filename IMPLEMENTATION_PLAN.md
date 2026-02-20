@@ -96,7 +96,7 @@ The React frontend is fully built (pages, components, auth, routing) but current
 - [x] Replace `streamSurfaceScan()` (calls Edge Function `surface-scan`) with a call to `POST /api/audit` + `GET /api/status/{scan_id}` SSE
 - [ ] Replace `callSecurityReview()` (calls Edge Function `security-review`) — no longer needed; security agent is part of the pipeline
 - [ ] Replace `streamDeepProbe()` (calls Edge Function `deep-probe`) — no longer needed; builder agent is part of the pipeline
-- [ ] Keep or refactor `streamVisionIntake()` — currently calls Edge Function `vision-intake`; decide whether vision intake moves to the Python backend or stays as a standalone edge function
+- [x] Keep or refactor `streamVisionIntake()` — moved to Python backend `/api/vision-intake`
 - [x] Add `startAudit(repoUrl, vibePrompt?, projectCharter?)` — POST to `/api/audit`, return `scan_id`
 - [x] Add `streamScanStatus(scanId, onEvent)` — EventSource to `/api/status/{scan_id}`
 - [ ] Add proper auth header injection (Supabase JWT)
@@ -128,7 +128,7 @@ The React frontend is fully built (pages, components, auth, routing) but current
 
 ### 2.6 Cleanup
 
-- [~] Remove legacy Supabase Edge Function references from frontend
+- [x] Remove legacy Supabase Edge Function references from frontend
 - [ ] Delete `supabase/functions/` directory if it still exists (Edge Functions are replaced by Python backend)
 - [ ] Update `.env` / `VITE_*` variables if the backend URL differs from Supabase Functions URL
 
@@ -208,15 +208,15 @@ The React frontend is fully built (pages, components, auth, routing) but current
 | Phase | Status | Notes |
 |-------|--------|-------|
 | **Phase 1** — Backend foundation | **~98% complete** | Agents, orchestrator, API routes, DB schema, and core services are in place. Sandbox executor/network policy and webhook route now exist; remaining work is deeper reliability hardening. |
-| **Phase 2** — Frontend integration | **~80% complete** | Core scan path is wired to Python backend (`/api/audit`, `/api/status`, limits/artifacts). Remaining gap: vision-intake still uses edge function and final cleanup of legacy references. |
+| **Phase 2** — Frontend integration | **~90% complete** | Core scan path and vision intake are wired to Python backend (`/api/audit`, `/api/status`, `/api/vision-intake`, limits/artifacts). Remaining work is mainly type cleanup and final UX polish. |
 | **Phase 3** — Auto-fix (paid) | **Stub only** | `POST /api/fix` returns a placeholder response. Full fix loop, payment, PR creation not implemented. |
 | **Phase 4** — Production hardening | **In progress** | Added webhook signature + replay checks and sandbox command/network policy enforcement scaffold. Retry logic/monitoring/perf work still pending. |
 
 ### Recommended next step
 
-**Phase 2 (Frontend Integration)** is the critical path — the backend pipeline is functional, but the frontend can't talk to it yet. Specifically:
+**Phase 3 (Auto-fix revenue loop) + Phase 4 hardening** are now the critical path.
 
-1. Rewrite `src/lib/api.ts` to call the Python backend
-2. Update `ScanLive.tsx` to use the new SSE event format
-3. Update `NewScan.tsx` to POST to `/api/audit`
-4. Clean up legacy Edge Function references
+1. Implement full `POST /api/fix` execution loop (sandbox edit/test/verify/PR)
+2. Add robust retry/recovery and model fallback behavior
+3. Complete observability and incident alerting baselines
+4. Tighten policy enforcement and security controls for production rollout

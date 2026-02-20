@@ -1,6 +1,5 @@
 import { getClerkToken } from "@/integrations/clerk/tokenStore";
 
-const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 const API_URL = `${API_BASE_URL}/api`;
 export const TIER1_ENABLED = String(import.meta.env.VITE_TIER1_ENABLED ?? "true").toLowerCase() !== "false";
@@ -366,10 +365,14 @@ export async function streamVisionIntake({
   onDelta: StreamCallback;
   onDone: () => void;
 }) {
-  const resp = await fetch(`${FUNCTIONS_URL}/vision-intake`, {
+  const resp = await fetch(`${API_URL}/vision-intake`, {
     method: "POST",
     headers: await getAuthHeaders(),
-    body: JSON.stringify({ messages, repoUrl, vibePrompt }),
+    body: JSON.stringify({
+      messages,
+      repo_url: repoUrl,
+      vibe_prompt: vibePrompt,
+    }),
   });
 
   if (!resp.ok || !resp.body) {

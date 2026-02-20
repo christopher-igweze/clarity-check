@@ -18,7 +18,16 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from api.middleware.auth import SupabaseAuthMiddleware
 from api.middleware.rate_limit import limiter
-from api.routes import audit, status, fix, primer, onboarding, github_oauth, webhook
+from api.routes import (
+    audit,
+    status,
+    fix,
+    primer,
+    onboarding,
+    github_oauth,
+    webhook,
+    vision_intake,
+)
 from config import settings
 
 logging.basicConfig(
@@ -86,6 +95,7 @@ app.include_router(primer.router, prefix="/api", tags=["primer"])
 app.include_router(onboarding.router, prefix="/api", tags=["onboarding"])
 app.include_router(github_oauth.router, prefix="/api", tags=["github"])
 app.include_router(webhook.router, prefix="/api", tags=["webhook"])
+app.include_router(vision_intake.router, prefix="/api", tags=["vision-intake"])
 
 
 # ------------------------------------------------------------------ #
