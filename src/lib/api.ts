@@ -3,6 +3,8 @@ import { getClerkToken } from "@/integrations/clerk/tokenStore";
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
 const API_URL = `${API_BASE_URL}/api`;
 export const TIER1_ENABLED = String(import.meta.env.VITE_TIER1_ENABLED ?? "true").toLowerCase() !== "false";
+export const BUILD_CONTROL_PLANE_ENABLED =
+  String(import.meta.env.VITE_BUILD_CONTROL_PLANE_ENABLED ?? "false").toLowerCase() === "true";
 
 type StreamCallback = (text: string) => void;
 type ApiError = Error & { code?: string; status?: number; payload?: unknown };
@@ -255,6 +257,33 @@ export type ScanStatusEvent = {
   };
 };
 
+export type BuildRunResponse = {
+  buildId: string;
+  status: string;
+};
+
+export type BuildRuntimeTick = {
+  build_id: string;
+  runtime_id: string;
+  executed_nodes: string[];
+  pending_nodes: string[];
+  active_level?: number | null;
+  level_started?: number | null;
+  level_completed?: number | null;
+  finished: boolean;
+};
+
+export type BuildStatusEvent = {
+  event: string;
+  payload: {
+    event_type?: string;
+    build_id?: string;
+    timestamp?: string;
+    payload?: Record<string, unknown>;
+    message?: string;
+  };
+};
+
 export async function streamScanStatus({
   scanId,
   onEvent,
@@ -416,4 +445,156 @@ export async function streamVisionIntake({
   }
 
   onDone();
+}
+
+export async function createBuildRun({
+  repoUrl,
+  objective,
+}: {
+  repoUrl: string;
+  objective: string;
+}): Promise<BuildRunResponse> {
+  const resp = await fetch(`${API_BASE_URL}/v1/builds`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      repo_url: repoUrl,
+      objective,
+    }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to create orchestration build");
+  }
+  const data = await resp.json();
+  return {
+    buildId: data.build_id as string,
+    status: data.status as string,
+  };
+}
+
+export async function getBuildRun(buildId: string): Promise<{ status: string }> {
+  const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}`, {
+    method: "GET",
+    headers: {
+      Authorization: (await getAuthHeaders()).Authorization,
+    },
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to fetch build status");
+  }
+  const data = await resp.json();
+  return { status: data.status as string };
+}
+
+export async function bootstrapBuildRuntime(buildId: string): Promise<{ runtimeId: string }> {
+  const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}/runtime/bootstrap`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to bootstrap runtime");
+  }
+  const data = await resp.json();
+  return { runtimeId: data.runtime_id as string };
+}
+
+export async function tickBuildRuntime(buildId: string): Promise<BuildRuntimeTick> {
+  const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}/runtime/tick`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to tick runtime");
+  }
+  return (await resp.json()) as BuildRuntimeTick;
+}
+
+export async function streamBuildEvents({
+  buildId,
+  onEvent,
+  onDone,
+}: {
+  buildId: string;
+  onEvent: (event: BuildStatusEvent) => void;
+  onDone: () => void;
+}) {
+  const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}/events`, {
+    method: "GET",
+    headers: {
+      Authorization: (await getAuthHeaders()).Authorization,
+    },
+  });
+
+  if (!resp.ok || !resp.body) {
+    const err = await resp.text();
+    throw new Error(err || "Failed to stream build events");
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let doneCalled = false;
+
+  const safeDone = () => {
+    if (doneCalled) return;
+    doneCalled = true;
+    onDone();
+  };
+
+  const findEventDelimiter = (s: string) => {
+    const lf = s.indexOf("\n\n");
+    const crlf = s.indexOf("\r\n\r\n");
+    if (lf === -1) return crlf === -1 ? null : { index: crlf, length: 4 };
+    if (crlf === -1) return { index: lf, length: 2 };
+    return lf < crlf ? { index: lf, length: 2 } : { index: crlf, length: 4 };
+  };
+
+  const dispatchEventBlock = (block: string) => {
+    const lines = block.split(/\r?\n/);
+    let eventType = "message";
+    const dataLines: string[] = [];
+    for (const line of lines) {
+      const clean = line.endsWith("\r") ? line.slice(0, -1) : line;
+      if (clean.startsWith(":") || clean.trim() === "") continue;
+      if (clean.startsWith("event:")) {
+        eventType = clean.slice(6).trim();
+      } else if (clean.startsWith("data:")) {
+        dataLines.push(clean.slice(5).trim());
+      }
+    }
+    const dataStr = dataLines.join("\n");
+    if (!dataStr) return;
+
+    let payload: BuildStatusEvent["payload"] = {};
+    try {
+      payload = JSON.parse(dataStr);
+    } catch {
+      payload = { message: dataStr };
+    }
+
+    onEvent({ event: eventType, payload });
+    if (eventType === "BUILD_FINISHED" || eventType === "error" || eventType === "timeout") {
+      safeDone();
+    }
+  };
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let delim: { index: number; length: number } | null;
+    while ((delim = findEventDelimiter(buffer)) !== null) {
+      const chunk = buffer.slice(0, delim.index);
+      buffer = buffer.slice(delim.index + delim.length);
+      if (chunk.trim()) {
+        dispatchEventBlock(chunk);
+      }
+    }
+  }
+
+  if (buffer.trim()) {
+    dispatchEventBlock(buffer);
+  }
+  safeDone();
 }
