@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import unittest
 from uuid import UUID
@@ -18,6 +19,7 @@ os.environ.setdefault("DAYTONA_API_KEY", "test")
 
 from api.routes import builds, runtime  # noqa: E402
 from orchestration.store import build_store  # noqa: E402
+from orchestration.telemetry import reset_runtime_metrics  # noqa: E402
 
 
 class RuntimeRouteTests(unittest.TestCase):
@@ -37,6 +39,7 @@ class RuntimeRouteTests(unittest.TestCase):
 
     def setUp(self) -> None:
         builds.limiter.reset()
+        asyncio.run(reset_runtime_metrics())
 
     def _create_build(self, dag: list[dict] | None = None) -> str:
         payload = {
@@ -135,6 +138,35 @@ class RuntimeRouteTests(unittest.TestCase):
         self.assertGreaterEqual(len(gates), 1)
         self.assertEqual(gates[0]["gate"], "MERGE_GATE")
         self.assertEqual(gates[0]["status"], "PASS")
+
+    def test_runtime_metrics_and_summary_endpoints(self) -> None:
+        build_id = self._create_build()
+        self.client.post(f"/v1/builds/{build_id}/runtime/bootstrap")
+        self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+
+        metrics_resp = self.client.get(f"/v1/builds/{build_id}/runtime/metrics")
+        self.assertEqual(metrics_resp.status_code, 200)
+        metrics = metrics_resp.json()
+        self.assertGreaterEqual(len(metrics), 2)
+        metric_names = {row["metric"] for row in metrics}
+        self.assertIn("runtime_bootstrap", metric_names)
+        self.assertIn("runtime_tick", metric_names)
+
+        tick_metrics_resp = self.client.get(
+            f"/v1/builds/{build_id}/runtime/metrics?metric=runtime_tick&limit=5"
+        )
+        self.assertEqual(tick_metrics_resp.status_code, 200)
+        tick_metrics = tick_metrics_resp.json()
+        self.assertGreaterEqual(len(tick_metrics), 1)
+        self.assertTrue(all(row["metric"] == "runtime_tick" for row in tick_metrics))
+
+        summary_resp = self.client.get(f"/v1/builds/{build_id}/runtime/telemetry")
+        self.assertEqual(summary_resp.status_code, 200)
+        summary = summary_resp.json()
+        self.assertEqual(summary["build_id"], build_id)
+        self.assertGreaterEqual(summary["metric_count"], 2)
+        self.assertGreaterEqual(summary["bootstrap_count"], 1)
+        self.assertGreaterEqual(summary["tick_count"], 1)
 
 
 if __name__ == "__main__":

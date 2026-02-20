@@ -46,7 +46,7 @@ class RuntimeGateway:
             emit_runtime_metric(
                 metric="runtime_bootstrap",
                 tags={"build_id": str(build.build_id)},
-                fields={"runtime_id": str(session.runtime_id)},
+                fields={"runtime_id": str(session.runtime_id), "status": session.status},
             )
             return session
 
@@ -98,7 +98,11 @@ class RuntimeGateway:
                     "build_id": str(build.build_id),
                     "runtime_id": str(state.session.runtime_id),
                 },
-                fields={"pending": len(pending_nodes), "finished": finished},
+                fields={
+                    "pending": len(pending_nodes),
+                    "finished": finished,
+                    "status": state.session.status,
+                },
             )
 
             return RuntimeTickResult(
@@ -111,4 +115,3 @@ class RuntimeGateway:
 
 
 runtime_gateway = RuntimeGateway()
-

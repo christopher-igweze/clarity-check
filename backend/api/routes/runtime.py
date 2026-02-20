@@ -8,9 +8,10 @@ from fastapi import APIRouter, HTTPException, Request
 
 from api.middleware.rate_limit import limiter, rate_limit_string
 from models.builds import BuildStatus, GateDecisionStatus, TaskStatus
-from models.runtime import RuntimeSession, RuntimeTickResult
+from models.runtime import RuntimeMetric, RuntimeSession, RuntimeTelemetrySummary, RuntimeTickResult
 from orchestration.runtime_gateway import runtime_gateway
 from orchestration.store import build_store
+from orchestration.telemetry import list_runtime_metrics, summarize_runtime_metrics
 
 router = APIRouter()
 
@@ -46,6 +47,36 @@ async def runtime_status(build_id: UUID) -> RuntimeSession:
             detail={"code": "runtime_not_found", "message": "Runtime session not found."},
         )
     return session
+
+
+@router.get("/v1/builds/{build_id}/runtime/metrics", response_model=list[RuntimeMetric])
+async def runtime_metrics(
+    build_id: UUID,
+    metric: str | None = None,
+    limit: int = 200,
+) -> list[RuntimeMetric]:
+    build = await build_store.get_build(build_id)
+    if build is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        )
+    return await list_runtime_metrics(
+        build_id=build_id,
+        metric=metric,
+        limit=limit,
+    )
+
+
+@router.get("/v1/builds/{build_id}/runtime/telemetry", response_model=RuntimeTelemetrySummary)
+async def runtime_telemetry(build_id: UUID) -> RuntimeTelemetrySummary:
+    build = await build_store.get_build(build_id)
+    if build is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        )
+    return await summarize_runtime_metrics(build_id)
 
 
 @router.post("/v1/builds/{build_id}/runtime/tick", response_model=RuntimeTickResult)
