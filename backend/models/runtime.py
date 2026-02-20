@@ -53,3 +53,19 @@ class RuntimeTelemetrySummary(BaseModel):
     latest_runtime_id: UUID | None = None
     latest_status: str | None = None
     last_emitted_at: datetime | None = None
+
+
+class RuntimeRunLog(BaseModel):
+    log_id: UUID
+    build_id: UUID
+    runtime_id: UUID
+    node_id: str
+    runner: str
+    workspace_id: str
+    status: Literal["completed", "failed", "skipped"] = "completed"
+    message: str
+    started_at: datetime = Field(default_factory=utc_now)
+    finished_at: datetime = Field(default_factory=utc_now)
+    duration_ms: int = 0
+    error: str | None = None
+    metadata: dict = Field(default_factory=dict)

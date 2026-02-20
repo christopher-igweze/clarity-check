@@ -7,8 +7,15 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 
 from api.middleware.rate_limit import limiter, rate_limit_string
-from models.builds import BuildStatus, GateDecisionStatus, TaskStatus
-from models.runtime import RuntimeMetric, RuntimeSession, RuntimeTelemetrySummary, RuntimeTickResult
+from models.builds import BuildStatus, GateDecisionStatus, GateType, TaskStatus
+from models.runtime import (
+    RuntimeMetric,
+    RuntimeRunLog,
+    RuntimeSession,
+    RuntimeTelemetrySummary,
+    RuntimeTickResult,
+)
+from orchestration.runner_bridge import runner_bridge
 from orchestration.runtime_gateway import runtime_gateway
 from orchestration.store import build_store
 from orchestration.telemetry import list_runtime_metrics, summarize_runtime_metrics
@@ -79,6 +86,27 @@ async def runtime_telemetry(build_id: UUID) -> RuntimeTelemetrySummary:
     return await summarize_runtime_metrics(build_id)
 
 
+@router.get("/v1/builds/{build_id}/runtime/logs", response_model=list[RuntimeRunLog])
+async def runtime_logs(
+    build_id: UUID,
+    node_id: str | None = None,
+    status: str | None = None,
+    limit: int = 200,
+) -> list[RuntimeRunLog]:
+    build = await build_store.get_build(build_id)
+    if build is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        )
+    return await runner_bridge.list_logs(
+        build_id=build_id,
+        node_id=node_id,
+        status=status,
+        limit=limit,
+    )
+
+
 @router.post("/v1/builds/{build_id}/runtime/tick", response_model=RuntimeTickResult)
 @limiter.limit(rate_limit_string())
 async def runtime_tick(build_id: UUID, request: Request) -> RuntimeTickResult:
@@ -111,15 +139,58 @@ async def runtime_tick(build_id: UUID, request: Request) -> RuntimeTickResult:
                 node_id=node_id,
                 source="runtime_tick",
             )
+            run_log = await runner_bridge.execute(
+                build=build,
+                runtime_id=result.runtime_id,
+                node_id=node_id,
+            )
+            await build_store.append_event(
+                build_id,
+                event_type="RUNNER_RESULT",
+                payload={
+                    "log_id": str(run_log.log_id),
+                    "node_id": run_log.node_id,
+                    "runner": run_log.runner,
+                    "workspace_id": run_log.workspace_id,
+                    "status": run_log.status,
+                    "duration_ms": run_log.duration_ms,
+                    "error": run_log.error,
+                },
+            )
+
+            if run_log.status == "failed":
+                await build_store.finish_task_run(
+                    build_id,
+                    task_run_id=task_run.task_run_id,
+                    status=TaskStatus.failed,
+                    error=run_log.error or run_log.message,
+                    source="runtime_tick",
+                )
+                await build_store.record_gate_decision(
+                    build_id,
+                    gate=GateType.policy,
+                    status=GateDecisionStatus.fail,
+                    reason="runner_execution_failed",
+                    node_id=node_id,
+                    source="runtime_tick",
+                )
+                if build.status != BuildStatus.failed:
+                    await build_store.fail_build(
+                        build_id,
+                        reason=f"runner_failed:{node_id}",
+                    )
+                continue
+
+            task_status = TaskStatus.skipped if run_log.status == "skipped" else TaskStatus.completed
             await build_store.finish_task_run(
                 build_id,
                 task_run_id=task_run.task_run_id,
-                status=TaskStatus.completed,
+                status=task_status,
                 source="runtime_tick",
             )
 
             node = next((item for item in build.dag if item.node_id == node_id), None)
-            if node is not None and node.gate is not None:
+            if node is not None and node.gate is not None and task_status == TaskStatus.completed:
                 await build_store.record_gate_decision(
                     build_id,
                     gate=node.gate,
@@ -129,7 +200,7 @@ async def runtime_tick(build_id: UUID, request: Request) -> RuntimeTickResult:
                     source="runtime_tick",
                 )
 
-        if result.finished and build.status != BuildStatus.completed:
+        if result.finished and build.status == BuildStatus.running:
             await build_store.complete_build(build_id, reason="runtime_tick_completed")
         return result
     except (KeyError, ValueError) as exc:

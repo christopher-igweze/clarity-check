@@ -18,6 +18,7 @@ os.environ.setdefault("OPENROUTER_API_KEY", "test")
 os.environ.setdefault("DAYTONA_API_KEY", "test")
 
 from api.routes import builds, runtime  # noqa: E402
+from orchestration.runner_bridge import runner_bridge  # noqa: E402
 from orchestration.store import build_store  # noqa: E402
 from orchestration.telemetry import reset_runtime_metrics  # noqa: E402
 
@@ -40,14 +41,21 @@ class RuntimeRouteTests(unittest.TestCase):
     def setUp(self) -> None:
         builds.limiter.reset()
         asyncio.run(reset_runtime_metrics())
+        asyncio.run(runner_bridge.reset())
 
-    def _create_build(self, dag: list[dict] | None = None) -> str:
+    def _create_build(
+        self,
+        dag: list[dict] | None = None,
+        metadata: dict | None = None,
+    ) -> str:
         payload = {
             "repo_url": "https://github.com/octocat/Hello-World",
             "objective": "runtime test build",
         }
         if dag is not None:
             payload["dag"] = dag
+        if metadata is not None:
+            payload["metadata"] = metadata
         resp = self.client.post(
             "/v1/builds",
             json=payload,
@@ -167,6 +175,65 @@ class RuntimeRouteTests(unittest.TestCase):
         self.assertGreaterEqual(summary["metric_count"], 2)
         self.assertGreaterEqual(summary["bootstrap_count"], 1)
         self.assertGreaterEqual(summary["tick_count"], 1)
+
+    def test_runtime_logs_endpoint_returns_normalized_runner_records(self) -> None:
+        build_id = self._create_build()
+        self.client.post(f"/v1/builds/{build_id}/runtime/bootstrap")
+        self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+
+        logs_resp = self.client.get(f"/v1/builds/{build_id}/runtime/logs")
+        self.assertEqual(logs_resp.status_code, 200)
+        logs = logs_resp.json()
+        self.assertGreaterEqual(len(logs), 1)
+        self.assertEqual(logs[0]["runner"], "openhands")
+        self.assertEqual(logs[0]["status"], "completed")
+
+    def test_runtime_tick_fails_closed_when_runner_returns_failure(self) -> None:
+        build_id = self._create_build(
+            dag=[
+                {"node_id": "scanner", "title": "scan", "agent": "scanner", "depends_on": []},
+                {"node_id": "builder", "title": "build", "agent": "builder", "depends_on": ["scanner"]},
+            ],
+            metadata={
+                "runner_results": {
+                    "scanner": {
+                        "runner": "daytona-openhands",
+                        "workspace_id": "ws-daytona-1",
+                        "status": "failed",
+                        "error": "integration test gate failed",
+                    }
+                }
+            },
+        )
+
+        self.client.post(f"/v1/builds/{build_id}/runtime/bootstrap")
+        tick_resp = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+        self.assertEqual(tick_resp.status_code, 200)
+
+        build_resp = self.client.get(f"/v1/builds/{build_id}")
+        self.assertEqual(build_resp.status_code, 200)
+        build_payload = build_resp.json()
+        self.assertEqual(build_payload["status"], "failed")
+
+        task_resp = self.client.get(f"/v1/builds/{build_id}/tasks")
+        self.assertEqual(task_resp.status_code, 200)
+        tasks = task_resp.json()
+        self.assertEqual(len(tasks), 1)
+        self.assertEqual(tasks[0]["status"], "failed")
+
+        gates_resp = self.client.get(f"/v1/builds/{build_id}/gates")
+        self.assertEqual(gates_resp.status_code, 200)
+        gate_rows = gates_resp.json()
+        self.assertGreaterEqual(len(gate_rows), 1)
+        self.assertEqual(gate_rows[0]["gate"], "POLICY_GATE")
+        self.assertEqual(gate_rows[0]["status"], "FAIL")
+
+        logs_resp = self.client.get(f"/v1/builds/{build_id}/runtime/logs?status=failed")
+        self.assertEqual(logs_resp.status_code, 200)
+        logs = logs_resp.json()
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["workspace_id"], "ws-daytona-1")
+        self.assertEqual(logs[0]["status"], "failed")
 
     def test_runtime_tick_executes_single_level_per_tick(self) -> None:
         build_id = self._create_build(
