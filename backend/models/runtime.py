@@ -30,3 +30,23 @@ class RuntimeTickResult(BaseModel):
     pending_nodes: list[str] = Field(default_factory=list)
     finished: bool = False
 
+
+class RuntimeMetric(BaseModel):
+    metric: str
+    build_id: UUID | None = None
+    runtime_id: UUID | None = None
+    value: int | float = 1
+    tags: dict[str, str] = Field(default_factory=dict)
+    fields: dict = Field(default_factory=dict)
+    emitted_at: datetime = Field(default_factory=utc_now)
+
+
+class RuntimeTelemetrySummary(BaseModel):
+    build_id: UUID
+    metric_count: int = 0
+    bootstrap_count: int = 0
+    tick_count: int = 0
+    total_executed_nodes: int = 0
+    latest_runtime_id: UUID | None = None
+    latest_status: str | None = None
+    last_emitted_at: datetime | None = None
