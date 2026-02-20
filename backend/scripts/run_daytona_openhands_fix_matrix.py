@@ -558,51 +558,97 @@ def _baseline_findings_text(scan_payload: dict, limit: int = 8) -> str:
     return "\n".join(lines)
 
 
+def _provider_system_overlay(model: str) -> list[str]:
+    if model.startswith("anthropic/"):
+        return [
+            "Anthropic mode: be clear and direct, action-first, and avoid speculative detours.",
+            "Use concise execution notes internally; return only the requested final JSON.",
+        ]
+    if model.startswith("openai/"):
+        return [
+            "OpenAI mode: treat constraints and schema as a strict contract.",
+            "Prioritize deterministic command execution with brief, evidence-backed results.",
+        ]
+    if model.startswith("google/"):
+        return [
+            "Google mode: follow deterministic system-style behavior with explicit assumptions.",
+            "When ambiguity exists, choose the safest implementation path and continue.",
+        ]
+    return ["Provider mode: use deterministic, execution-first behavior and strict schema fidelity."]
+
+
 def _prompt_for_model(
     *,
     model: str,
     repo: RepoTarget,
     baseline_scan: dict,
+    run_id: str,
 ) -> str:
-    base_task = f"""You are working in /home/daytona/repo.
+    branch_name = f"codex/{_slug(repo.label)}-fix-{_slug(run_id)[:16]}"
+    overlay_lines = "\n".join([f"- {line}" for line in _provider_system_overlay(model)])
 
-Goal:
-- In one pass, reduce actionable scan findings while keeping the repo healthy.
-- Preserve behavior and avoid broad refactors.
+    return f"""SYSTEM ROLE
+You are a one-shot software implementation agent operating in `/home/daytona/repo`.
 
-Baseline findings:
+MISSION
+- Complete the remediation in a single pass.
+- Reduce actionable scan findings without breaking behavior.
+- Prefer minimal, surgical edits over broad refactors.
+
+PROVIDER OVERLAY
+{overlay_lines}
+
+TOOLS AVAILABLE AND USAGE POLICY
+- Terminal tool:
+  - Use for discovery (`ls`, `git`, targeted file reads), dependency install, tests, scans, and validation commands.
+  - Use deterministic non-interactive commands only; do not wait for user input.
+- File editor tool:
+  - Use to apply focused code/test/documentation changes.
+  - Avoid unrelated file churn and preserve existing style/conventions.
+- Git/branch operations:
+  - Create/switch branch early, and keep working tree cleanly scoped to this task.
+
+IMPLEMENTATION PLAN STRUCTURE (FOLLOW IN ORDER)
+1. Understand: inspect findings and affected files; derive safe assumptions.
+2. Plan: create a concise internal plan mapping each change to a finding.
+3. Execute: apply minimal edits and related tests/docs updates.
+4. Validate: run required commands and ensure expected outcomes.
+5. Deliver: return strict JSON report with evidence.
+
+BASELINE FINDINGS
 {_baseline_findings_text(baseline_scan)}
 
-Required execution plan:
-1. Inspect relevant files and choose the smallest safe edits to reduce the baseline warnings/failures.
-2. Run install and tests:
-   - Install: `{repo.install_cmd}`
-   - Test: `{repo.test_cmd}`
-3. Re-run post-fix scan:
-   - `python3 /home/daytona/quick_scan.py /home/daytona/repo > /home/daytona/agent_post_scan.json`
-
-Hard constraints:
+NON-NEGOTIABLE CONSTRAINTS
 - Do not ask follow-up questions; make safe assumptions and proceed.
-- Do not disable tests or CI checks.
-- Keep changes focused and minimal.
-- Create and use branch `codex/{_slug(repo.label)}-fix-${{RUN_ID}}`.
-- Create/update `docs/agent-implementation-note.md`.
+- Do not disable tests, CI, or safety controls.
+- Keep scope bounded to this remediation.
+- Create and use branch `{branch_name}`.
+- Create/update `docs/agent-implementation-note.md` with:
+  - assumptions
+  - change list by file
+  - validation command outputs (concise)
+  - residual risks
 
-Required validation commands:
-- `git status --short`
-- `git diff --stat`
-- `{repo.test_cmd}`
+REQUIRED COMMANDS
+- Install: `{repo.install_cmd}`
+- Test: `{repo.test_cmd}`
+- Baseline/post scan command:
+  - `python3 /home/daytona/quick_scan.py /home/daytona/repo > /home/daytona/agent_post_scan.json`
+- Validation commands:
+  - `git status --short`
+  - `git diff --stat`
+  - `{repo.test_cmd}`
 
-Final response requirements:
-- Return STRICT JSON only (no markdown).
-- Schema:
+OUTPUT CONTRACT
+- Return STRICT JSON only (no markdown, no prose before/after JSON).
+- Required schema:
   {{
     "status": "done" | "blocked",
     "summary": "technical summary",
     "user_summary": "plain-English user update",
     "assumptions": ["assumption1"],
     "asked_follow_up_questions": false,
-    "branch_name": "codex/...",
+    "branch_name": "{branch_name}",
     "implementation_doc": "docs/agent-implementation-note.md",
     "files_changed": ["path1", "path2"],
     "tests": {{
@@ -619,33 +665,6 @@ Final response requirements:
     "follow_up_prs": ["optional"]
   }}
 """
-
-    if model.startswith("anthropic/"):
-        return f"""<role>Act as a precise senior software engineer.</role>
-<task>
-{base_task}
-</task>
-<quality_bar>
-Be clear and direct. Prefer concrete file edits and verifiable outcomes over broad advice.
-</quality_bar>
-"""
-    if model.startswith("openai/"):
-        return f"""Role: senior software engineer.
-
-Deliverable: execute the task exactly and return strict JSON.
-
-{base_task}
-
-Follow the instructions exactly; prioritize correctness over verbosity.
-"""
-    if model.startswith("google/"):
-        return f"""System instruction: complete the repository remediation task with deterministic steps.
-
-{base_task}
-
-Think privately, then execute commands and edits. Return only the final JSON.
-"""
-    return base_task
 
 
 def compute_resource_worker_cap(
@@ -963,7 +982,12 @@ async def _run_combo(repo: RepoTarget, model: ModelTarget, score_target: float) 
             raise RuntimeError("baseline scan failed")
         baseline_scan = json.loads(await mgr.read_file(scan_id, baseline_path))
 
-        prompt_text = _prompt_for_model(model=model.model, repo=repo, baseline_scan=baseline_scan)
+        prompt_text = _prompt_for_model(
+            model=model.model,
+            repo=repo,
+            baseline_scan=baseline_scan,
+            run_id=str(scan_id),
+        )
         await mgr.upload_file(scan_id, prompt_path, prompt_text.encode("utf-8"))
         await mgr.upload_file(scan_id, api_key_path, settings.openrouter_api_key.encode("utf-8"))
         await run_step(f"chmod 600 {api_key_path}", cwd="/home/daytona", timeout=60)
