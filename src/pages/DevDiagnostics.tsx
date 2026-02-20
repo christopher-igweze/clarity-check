@@ -3,6 +3,8 @@ import { supabase } from "@/integrations/supabase/client";
 import { getClerkToken } from "@/integrations/clerk/tokenStore";
 import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
+import { evaluateValidationGate, type ValidationSummary } from "@/lib/validation";
 
 function decodeJwtPayload(token: string): Record<string, unknown> | null {
   const parts = token.split(".");
@@ -24,6 +26,9 @@ const DevDiagnostics = () => {
   const [dbResult, setDbResult] = useState<unknown>(null);
   const [dbErr, setDbErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [validationInput, setValidationInput] = useState<string>("");
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const [validationGate, setValidationGate] = useState<{ passed: boolean; reasons: string[] } | null>(null);
 
   const expectedSub = user?.id || null;
 
@@ -58,6 +63,18 @@ const DevDiagnostics = () => {
       setDbErr(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const runValidationGate = () => {
+    setValidationError(null);
+    setValidationGate(null);
+    try {
+      const parsed = JSON.parse(validationInput) as ValidationSummary;
+      const gate = evaluateValidationGate(parsed);
+      setValidationGate(gate);
+    } catch (error) {
+      setValidationError(error instanceof Error ? error.message : String(error));
     }
   };
 
@@ -138,10 +155,37 @@ const DevDiagnostics = () => {
             </pre>
           )}
         </div>
+
+        <div className="glass rounded-xl p-6 space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <div className="text-sm text-muted-foreground">Open-source validation gate</div>
+              <div className="text-xs text-muted-foreground">
+                Paste a validation summary JSON and evaluate beta thresholds.
+              </div>
+            </div>
+            <Button size="sm" onClick={runValidationGate} disabled={!validationInput.trim()}>
+              Evaluate Gate
+            </Button>
+          </div>
+
+          <Textarea
+            className="min-h-[180px] font-mono text-xs"
+            value={validationInput}
+            onChange={(event) => setValidationInput(event.target.value)}
+            placeholder='{"repo_count":2,"run_count":6,"avg_success_rate":0.9,"max_duration_cv":0.2,"repos":[]}'
+          />
+
+          {validationError && <div className="text-sm text-destructive">{validationError}</div>}
+          {validationGate && (
+            <pre className="text-xs bg-secondary/40 rounded-lg p-3 overflow-auto">
+              {JSON.stringify(validationGate, null, 2)}
+            </pre>
+          )}
+        </div>
       </div>
     </div>
   );
 };
 
 export default DevDiagnostics;
-
