@@ -343,6 +343,59 @@ class BuildRouteTests(unittest.TestCase):
         self.assertEqual(build_resp.status_code, 200)
         self.assertEqual(build_resp.json()["status"], "failed")
 
+    def test_replan_suggest_returns_modify_dag_for_high_debt(self) -> None:
+        create_resp = self.client.post("/v1/builds", json=self._create_payload())
+        self.assertEqual(create_resp.status_code, 200)
+        build = create_resp.json()
+        build_id = build["build_id"]
+        node_ids = [row["node_id"] for row in build["dag"]]
+
+        self.client.post(
+            f"/v1/builds/{build_id}/debt",
+            json={"node_id": node_ids[0], "summary": "retry flake in scanner", "severity": "high"},
+        )
+        self.client.post(
+            f"/v1/builds/{build_id}/debt",
+            json={"node_id": node_ids[1], "summary": "builder timeout debt", "severity": "high"},
+        )
+
+        suggest_resp = self.client.get(f"/v1/builds/{build_id}/replan/suggest")
+        self.assertEqual(suggest_resp.status_code, 200)
+        suggestion = suggest_resp.json()
+        self.assertEqual(suggestion["action"], "MODIFY_DAG")
+        self.assertTrue(suggestion["reason"].startswith("high_severity_debt:"))
+        self.assertGreaterEqual(len(suggestion["replacement_nodes"]), 2)
+
+    def test_apply_replan_suggestion_aborts_on_blocking_policy(self) -> None:
+        create_resp = self.client.post("/v1/builds", json=self._create_payload())
+        self.assertEqual(create_resp.status_code, 200)
+        build_id = create_resp.json()["build_id"]
+
+        self.client.post(
+            f"/v1/builds/{build_id}/policy-violations",
+            json={
+                "code": "dangerous_command",
+                "message": "blocked command requested",
+                "source": "policy_engine",
+                "blocking": True,
+            },
+        )
+
+        suggest_resp = self.client.get(f"/v1/builds/{build_id}/replan/suggest")
+        self.assertEqual(suggest_resp.status_code, 200)
+        self.assertEqual(suggest_resp.json()["action"], "ABORT")
+
+        apply_resp = self.client.post(
+            f"/v1/builds/{build_id}/replan/suggest/apply",
+            json={},
+        )
+        self.assertEqual(apply_resp.status_code, 200)
+        self.assertEqual(apply_resp.json()["action"], "ABORT")
+
+        build_resp = self.client.get(f"/v1/builds/{build_id}")
+        self.assertEqual(build_resp.status_code, 200)
+        self.assertEqual(build_resp.json()["status"], "aborted")
+
 
 if __name__ == "__main__":
     unittest.main()

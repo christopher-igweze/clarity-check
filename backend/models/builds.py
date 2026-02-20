@@ -77,6 +77,12 @@ class ReplanDecision(BaseModel):
     replacement_nodes: list[DagNode] = Field(default_factory=list)
 
 
+class ReplanSuggestion(BaseModel):
+    action: ReplanAction
+    reason: str
+    replacement_nodes: list[DagNode] = Field(default_factory=list)
+
+
 class DebtItem(BaseModel):
     debt_id: UUID
     node_id: str
@@ -189,6 +195,10 @@ class ReplanDecisionRequest(BaseModel):
     action: ReplanAction = ReplanAction.continue_
     reason: str = "manual_replan"
     replacement_nodes: list[DagNode] = Field(default_factory=list)
+
+
+class ReplanSuggestionApplyRequest(BaseModel):
+    reason: str | None = None
 
 
 class DebtItemRequest(BaseModel):

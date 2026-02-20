@@ -23,6 +23,7 @@ from models.builds import (
     PolicyViolation,
     ReplanAction,
     ReplanDecision,
+    ReplanSuggestion,
     TaskRun,
     TaskStatus,
     utc_now,
@@ -665,6 +666,99 @@ class BuildStore:
             rows.sort(key=lambda row: row.created_at, reverse=True)
             return rows[: max(1, min(limit, 500))]
 
+    async def suggest_replan_decision(
+        self,
+        build_id: UUID,
+        *,
+        source: str = "debt_triage",
+    ) -> ReplanSuggestion:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+
+            blocking_violations = [row for row in build.policy_violations if row.blocking]
+            if blocking_violations:
+                codes = ",".join(sorted({row.code for row in blocking_violations}))
+                suggestion = ReplanSuggestion(
+                    action=ReplanAction.abort,
+                    reason=f"blocking_policy_violation:{codes}",
+                    replacement_nodes=[],
+                )
+            else:
+                critical_debt = [
+                    row for row in build.debt_items if self._severity_rank(row.severity) >= 4
+                ]
+                high_debt = [
+                    row for row in build.debt_items if self._severity_rank(row.severity) >= 3
+                ]
+                medium_debt = [
+                    row for row in build.debt_items if self._severity_rank(row.severity) >= 2
+                ]
+
+                if critical_debt:
+                    suggestion = ReplanSuggestion(
+                        action=ReplanAction.reduce_scope,
+                        reason=f"critical_debt_detected:{len(critical_debt)}",
+                        replacement_nodes=[],
+                    )
+                elif len(high_debt) >= 2:
+                    suggestion = ReplanSuggestion(
+                        action=ReplanAction.modify_dag,
+                        reason=f"high_severity_debt:{len(high_debt)}",
+                        replacement_nodes=self._build_debt_replacement_nodes_unlocked(
+                            build=build,
+                            debt_items=high_debt[:2],
+                        ),
+                    )
+                elif len(medium_debt) >= 3:
+                    suggestion = ReplanSuggestion(
+                        action=ReplanAction.modify_dag,
+                        reason=f"medium_severity_debt:{len(medium_debt)}",
+                        replacement_nodes=self._build_debt_replacement_nodes_unlocked(
+                            build=build,
+                            debt_items=medium_debt[:1],
+                        ),
+                    )
+                else:
+                    suggestion = ReplanSuggestion(
+                        action=ReplanAction.continue_,
+                        reason="debt_below_triage_threshold",
+                        replacement_nodes=[],
+                    )
+
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type="REPLAN_SUGGESTED",
+                    build_id=build_id,
+                    payload={
+                        "action": suggestion.action.value,
+                        "reason": suggestion.reason,
+                        "replacement_node_ids": [
+                            node.node_id for node in suggestion.replacement_nodes
+                        ],
+                        "source": source,
+                    },
+                )
+            )
+            return suggestion
+
+    async def apply_suggested_replan(
+        self,
+        build_id: UUID,
+        *,
+        reason_override: str | None = None,
+        source: str = "debt_triage",
+    ) -> ReplanDecision:
+        suggestion = await self.suggest_replan_decision(build_id, source=source)
+        return await self.record_replan_decision(
+            build_id,
+            action=suggestion.action,
+            reason=reason_override or suggestion.reason,
+            replacement_nodes=suggestion.replacement_nodes,
+            source=source,
+        )
+
     async def record_debt_item(
         self,
         build_id: UUID,
@@ -889,6 +983,55 @@ class BuildStore:
             if node.node_id == node_id:
                 node.status = status
                 return
+
+    def _severity_rank(self, severity: str) -> int:
+        normalized = severity.strip().lower()
+        mapping = {
+            "critical": 4,
+            "high": 3,
+            "medium": 2,
+            "low": 1,
+        }
+        return mapping.get(normalized, 2)
+
+    def _build_debt_replacement_nodes_unlocked(
+        self,
+        *,
+        build: BuildRun,
+        debt_items: list[DebtItem],
+    ) -> list[DagNode]:
+        existing_ids = {node.node_id for node in build.dag}
+        created: list[DagNode] = []
+        for debt_item in debt_items:
+            base_id = f"debt-remediation-{debt_item.node_id}"
+            node_id = self._next_unique_node_id_unlocked(
+                base_id=base_id,
+                existing_ids=existing_ids,
+            )
+            existing_ids.add(node_id)
+            depends_on = [debt_item.node_id] if debt_item.node_id in existing_ids else []
+            created.append(
+                DagNode(
+                    node_id=node_id,
+                    title=f"Debt remediation: {debt_item.node_id}",
+                    agent="planner",
+                    depends_on=depends_on,
+                )
+            )
+        return created
+
+    def _next_unique_node_id_unlocked(
+        self,
+        *,
+        base_id: str,
+        existing_ids: set[str],
+    ) -> str:
+        if base_id not in existing_ids:
+            return base_id
+        cursor = 2
+        while f"{base_id}-{cursor}" in existing_ids:
+            cursor += 1
+        return f"{base_id}-{cursor}"
 
     def _transition_build_status_unlocked(
         self,
