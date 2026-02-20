@@ -30,6 +30,7 @@ from api.routes import (
     builds,
     runtime,
     validation,
+    program,
 )
 from config import settings
 
@@ -102,6 +103,7 @@ app.include_router(vision_intake.router, prefix="/api", tags=["vision-intake"])
 app.include_router(builds.router, tags=["builds"])
 app.include_router(runtime.router, tags=["runtime"])
 app.include_router(validation.router, tags=["validation"])
+app.include_router(program.router, tags=["program"])
 
 
 # ------------------------------------------------------------------ #
