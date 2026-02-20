@@ -23,6 +23,15 @@ class Settings(BaseSettings):
     openrouter_api_key: str = Field(..., description="OpenRouter API key")
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
 
+    # --- GitHub Integration ---
+    github_client_id: str | None = None
+    github_client_secret: str | None = None
+    github_oauth_scope: str = "repo read:user user:email"
+    github_oauth_state_ttl_minutes: int = 15
+    github_oauth_state_secret: str | None = None
+    github_webhook_secret: str | None = None
+    webhook_replay_window_seconds: int = 600
+
     # --- Daytona (sandbox) ---
     daytona_api_key: str = Field(..., description="Daytona API key")
     daytona_api_url: str = "https://app.daytona.io/api"

@@ -252,6 +252,35 @@ async def get_github_access_token(user_id: str) -> str | None:
     return row.data[0].get("github_access_token")
 
 
+async def save_github_connection(
+    *,
+    user_id: str,
+    access_token: str,
+    github_username: str | None = None,
+    avatar_url: str | None = None,
+) -> None:
+    """Persist GitHub OAuth credentials and profile metadata for a user."""
+    client = _client()
+    client.table("profiles").update(
+        {
+            "github_access_token": access_token,
+            "github_username": github_username,
+            "avatar_url": avatar_url,
+        }
+    ).eq("user_id", str(user_id)).execute()
+
+
+async def clear_github_connection(*, user_id: str) -> None:
+    """Remove stored GitHub OAuth credentials for a user."""
+    client = _client()
+    client.table("profiles").update(
+        {
+            "github_access_token": None,
+            "github_username": None,
+        }
+    ).eq("user_id", str(user_id)).execute()
+
+
 async def save_org_onboarding(*, user_id: str, payload: dict) -> None:
     client = _client()
     client.table("profiles").update(

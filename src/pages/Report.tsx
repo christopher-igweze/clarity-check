@@ -7,7 +7,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
-import { getClerkToken } from "@/integrations/clerk/tokenStore";
 import { getReportArtifact } from "@/lib/api";
 
 interface ActionItem {
@@ -57,6 +56,20 @@ interface RunDetails {
     total_tokens?: number;
   };
 }
+
+type EducationMap = Record<string, { why_it_matters: string; cto_perspective: string }>;
+
+const buildEducationMap = (items: ActionItem[]): EducationMap => {
+  const cards: EducationMap = {};
+  for (const item of items) {
+    if (!item.why_it_matters && !item.cto_perspective) continue;
+    cards[item.id] = {
+      why_it_matters: item.why_it_matters || "",
+      cto_perspective: item.cto_perspective || "",
+    };
+  }
+  return cards;
+};
 
 const severityConfig: Record<string, { color: string; label: string; emoji: string }> = {
   critical: { color: "bg-neon-red text-primary-foreground", label: "Critical", emoji: "🔴" },
@@ -205,6 +218,7 @@ const Report = () => {
         .order("created_at", { ascending: true });
 
       if (items) setActionItems(items);
+      if (items) setEducationCards(buildEducationMap(items as ActionItem[]));
 
       try {
         const artifact = await getReportArtifact(id);
@@ -245,65 +259,21 @@ const Report = () => {
     if (actionItems.length === 0) return;
     setEducationLoading(true);
     try {
-      const findings = actionItems.slice(0, 10).map((item) => ({
-        id: item.id,
-        title: item.title,
-        description: item.description,
-        category: item.category,
-        severity: item.severity,
-        file_path: item.file_path,
-      }));
-
-      const token = await getClerkToken();
-      if (!token) throw new Error("Authentication token missing. Please sign in again.");
-
-      const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-education`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ findings }),
-      });
-
-      if (!resp.ok) throw new Error("Failed to generate education cards");
-      const data = await resp.json();
-      const content = data.choices?.[0]?.message?.content || "";
-
-      // Parse JSON objects from response
-      const cards: Record<string, { why_it_matters: string; cto_perspective: string }> = {};
-      for (const line of content.split("\n")) {
-        try {
-          const obj = JSON.parse(line.trim());
-          if (obj.finding_id) cards[obj.finding_id] = { why_it_matters: obj.why_it_matters, cto_perspective: obj.cto_perspective };
-        } catch {
-          // Try parsing entire content as JSON array
-        }
-      }
-
-      // If no line-by-line parsing worked, try as array
+      const cards = buildEducationMap(actionItems);
       if (Object.keys(cards).length === 0) {
-        try {
-          const arr = JSON.parse(content);
-          if (Array.isArray(arr)) {
-            arr.forEach((obj: { finding_id: string; why_it_matters: string; cto_perspective: string }) => {
-              if (obj.finding_id) cards[obj.finding_id] = { why_it_matters: obj.why_it_matters, cto_perspective: obj.cto_perspective };
-            });
-          }
-        } catch { /* ignore */ }
+        toast({
+          title: "No saved insights yet",
+          description: "Education cards are generated during scans. Run a fresh scan to populate them.",
+        });
+        return;
       }
-
       setEducationCards(cards);
-
-      // Persist to action_items
-      for (const [itemId, card] of Object.entries(cards)) {
-        await supabase
-          .from("action_items")
-          .update({ why_it_matters: card.why_it_matters, cto_perspective: card.cto_perspective })
-          .eq("id", itemId);
-      }
+      toast({
+        title: "Insights loaded",
+        description: `Loaded ${Object.keys(cards).length} saved education cards.`,
+      });
     } catch (err) {
-      toast({ title: "Error", description: "Failed to generate educational cards.", variant: "destructive" });
+      toast({ title: "Error", description: "Failed to load educational cards.", variant: "destructive" });
     }
     setEducationLoading(false);
   };
@@ -502,17 +472,17 @@ const Report = () => {
               {agentLoading ? "Copying..." : "Copy agent markdown"}
             </Button>
             {actionItems.length > 0 && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={fetchEducation}
-                disabled={educationLoading}
-                className="border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/10"
-              >
-                <Lightbulb className="w-4 h-4 mr-1" />
-                {educationLoading ? "Generating..." : "Why This Matters"}
-              </Button>
-            )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={fetchEducation}
+                  disabled={educationLoading}
+                  className="border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/10"
+                >
+                  <Lightbulb className="w-4 h-4 mr-1" />
+                  {educationLoading ? "Loading..." : "Load Insights"}
+                </Button>
+              )}
             <Button variant="outline" size="sm" onClick={handleRescan}>
               <RefreshCw className="w-4 h-4 mr-1" /> Rescan
             </Button>

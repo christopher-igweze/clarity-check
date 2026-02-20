@@ -8,9 +8,10 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
-import { getClerkToken } from "@/integrations/clerk/tokenStore";
+import type { Database } from "@/integrations/supabase/types";
+import { disconnectGithub, exchangeGithubCode, getGithubAuthUrl } from "@/lib/api";
 
-const FUNCTIONS_URL = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1`;
+type ProfileRow = Database["public"]["Tables"]["profiles"]["Row"];
 
 const Settings = () => {
   const navigate = useNavigate();
@@ -32,10 +33,11 @@ const Settings = () => {
         .eq("user_id", user.id)
         .single();
       if (data) {
-        setDisplayName(data.display_name || "");
-        setGithubUsername(data.github_username || "");
-        setAvatarUrl(data.avatar_url || "");
-        setGithubConnected(!!(data as any).github_access_token);
+        const profile = data as ProfileRow;
+        setDisplayName(profile.display_name || "");
+        setGithubUsername(profile.github_username || "");
+        setAvatarUrl(profile.avatar_url || "");
+        setGithubConnected(Boolean(profile.github_access_token));
       }
     };
     loadProfile();
@@ -55,46 +57,26 @@ const Settings = () => {
     const exchangeCode = async () => {
       setConnectingGithub(true);
       try {
-        const token = await getClerkToken();
-        if (!token) throw new Error("Authentication token missing. Please sign in again.");
-
-        console.log("GitHub OAuth: exchanging code...");
-        const resp = await fetch(`${FUNCTIONS_URL}/github-oauth`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`,
-          },
-          body: JSON.stringify({
-            action: "exchange_code",
-            code,
-            redirect_uri: `${window.location.origin}/settings`,
-          }),
-        });
-
-        const data = await resp.json();
-        console.log("GitHub OAuth response:", resp.status, data);
-        if (!resp.ok) throw new Error(data.error || "Failed to connect GitHub");
-
-        // Save token to profile
-        const { error: updateError } = await supabase
-          .from("profiles")
-          .update({
-            github_username: data.github_username,
-            avatar_url: data.avatar_url,
-            github_access_token: data.access_token,
-          } as any)
-          .eq("user_id", user.id);
-
-        if (updateError) {
-          console.error("Profile update error:", updateError);
-          throw new Error("Failed to save GitHub token");
+        const state = searchParams.get("state");
+        if (!state) {
+          throw new Error("Missing OAuth state. Please retry GitHub connection.");
         }
 
-        setGithubUsername(data.github_username);
-        setAvatarUrl(data.avatar_url);
+        const data = await exchangeGithubCode({
+          code,
+          state,
+          redirectUri: `${window.location.origin}/settings`,
+        });
+
+        setGithubUsername(data.github_username || "");
+        setAvatarUrl(data.avatar_url || "");
         setGithubConnected(true);
-        toast({ title: "GitHub Connected", description: `Connected as ${data.github_username}` });
+        toast({
+          title: "GitHub Connected",
+          description: data.github_username
+            ? `Connected as ${data.github_username}`
+            : "GitHub account connected.",
+        });
 
         // Clean URL
         window.history.replaceState({}, "", "/settings");
@@ -110,23 +92,9 @@ const Settings = () => {
   const handleConnectGithub = async () => {
     setConnectingGithub(true);
     try {
-      const token = await getClerkToken();
-      if (!token) throw new Error("Authentication token missing. Please sign in again.");
-
-      const resp = await fetch(`${FUNCTIONS_URL}/github-oauth`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          action: "get_auth_url",
-          redirect_uri: `${window.location.origin}/settings`,
-        }),
+      const data = await getGithubAuthUrl({
+        redirectUri: `${window.location.origin}/settings`,
       });
-
-      const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || "Failed to get auth URL");
 
       window.location.href = data.auth_url;
     } catch (err) {
@@ -138,12 +106,10 @@ const Settings = () => {
 
   const handleDisconnectGithub = async () => {
     if (!user) return;
-    await supabase
-      .from("profiles")
-      .update({ github_access_token: null, github_username: null } as any)
-      .eq("user_id", user.id);
+    await disconnectGithub();
     setGithubConnected(false);
     setGithubUsername("");
+    setAvatarUrl("");
     toast({ title: "GitHub Disconnected" });
   };
 

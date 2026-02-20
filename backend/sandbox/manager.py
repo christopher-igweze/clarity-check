@@ -7,9 +7,8 @@ Sandboxes auto-delete after ``sandbox_timeout_minutes`` of inactivity.
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from uuid import UUID
 
 from daytona import (
@@ -22,19 +21,9 @@ from daytona import (
 )
 
 from config import settings
+from sandbox.executor import CommandResult, SandboxExecutor
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class CommandResult:
-    """Normalised result of a command execution inside a sandbox."""
-
-    command: str
-    exit_code: int
-    stdout: str
-    stderr: str
-    duration_ms: int = 0
 
 
 @dataclass
@@ -63,6 +52,7 @@ class SandboxManager:
         )
         self._daytona = Daytona(config)
         self._sessions: dict[UUID, SandboxSession] = {}
+        self._executor = SandboxExecutor()
 
     async def provision(self, scan_id: UUID, clone_url: str) -> SandboxSession:
         """Spin up a sandbox, clone the repo, and return a session handle."""
@@ -108,31 +98,11 @@ class SandboxManager:
             raise RuntimeError(f"No sandbox session for scan {scan_id}")
 
         work_dir = cwd or session.repo_path
-        # The Daytona SDK exec call is synchronous and can occasionally block on HTTP response
-        # reads even after the remote command has completed. Run it off-thread with an outer
-        # asyncio timeout to avoid hanging the whole orchestration loop indefinitely.
-        outer_timeout = max(30, int(timeout) + 30)
-
-        try:
-            resp = await asyncio.wait_for(
-                asyncio.to_thread(
-                    session.sandbox.process.exec,
-                    command,
-                    cwd=work_dir,
-                    timeout=timeout,
-                ),
-                timeout=outer_timeout,
-            )
-        except asyncio.TimeoutError as exc:
-            raise RuntimeError(
-                f"Sandbox exec response timeout after {outer_timeout}s for command: {command[:120]}"
-            ) from exc
-
-        return CommandResult(
+        return await self._executor.execute(
+            sandbox=session.sandbox,
             command=command,
-            exit_code=resp.exit_code,
-            stdout=resp.result or "",
-            stderr="",
+            cwd=work_dir,
+            timeout=timeout,
         )
 
     async def read_file(self, scan_id: UUID, path: str) -> str:
