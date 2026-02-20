@@ -26,6 +26,8 @@ from models.builds import (
     PolicyViolationRequest,
     ReplanDecision,
     ReplanDecisionRequest,
+    ReplanSuggestion,
+    ReplanSuggestionApplyRequest,
     TaskRun,
     TaskRunCompleteRequest,
     TaskRunStartRequest,
@@ -261,6 +263,43 @@ async def record_replan_decision(
             reason=request_body.reason,
             replacement_nodes=request_body.replacement_nodes,
             source="manual",
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_replan", "message": str(exc)},
+        ) from exc
+
+
+@router.get("/v1/builds/{build_id}/replan/suggest", response_model=ReplanSuggestion)
+async def suggest_replan_decision(build_id: UUID) -> ReplanSuggestion:
+    try:
+        return await build_store.suggest_replan_decision(build_id, source="debt_triage")
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+
+
+@router.post("/v1/builds/{build_id}/replan/suggest/apply", response_model=ReplanDecision)
+@limiter.limit(rate_limit_string())
+async def apply_suggested_replan_decision(
+    build_id: UUID,
+    request_body: ReplanSuggestionApplyRequest,
+    request: Request,
+) -> ReplanDecision:
+    _ = request.state.user_id
+    try:
+        return await build_store.apply_suggested_replan(
+            build_id,
+            reason_override=request_body.reason,
+            source="debt_triage",
         )
     except KeyError as exc:
         raise HTTPException(
