@@ -168,6 +168,34 @@ class RuntimeRouteTests(unittest.TestCase):
         self.assertGreaterEqual(summary["bootstrap_count"], 1)
         self.assertGreaterEqual(summary["tick_count"], 1)
 
+    def test_runtime_tick_executes_single_level_per_tick(self) -> None:
+        build_id = self._create_build(
+            dag=[
+                {"node_id": "a", "title": "A", "agent": "scanner", "depends_on": []},
+                {"node_id": "b", "title": "B", "agent": "builder", "depends_on": []},
+                {"node_id": "c", "title": "C", "agent": "planner", "depends_on": ["a", "b"]},
+            ]
+        )
+        self.client.post(f"/v1/builds/{build_id}/runtime/bootstrap")
+
+        tick_one = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+        self.assertEqual(tick_one.status_code, 200)
+        payload_one = tick_one.json()
+        self.assertEqual(set(payload_one["executed_nodes"]), {"a", "b"})
+        self.assertFalse(payload_one["finished"])
+        self.assertEqual(payload_one["level_started"], 1)
+
+        tick_two = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+        self.assertEqual(tick_two.status_code, 200)
+        payload_two = tick_two.json()
+        self.assertEqual(payload_two["executed_nodes"], ["c"])
+        self.assertTrue(payload_two["finished"])
+
+        events = build_store._events.get(UUID(build_id), [])
+        level_events = [entry for entry in events if entry.event_type == "LEVEL_STARTED"]
+        self.assertGreaterEqual(len(level_events), 2)
+        self.assertEqual(level_events[-1].payload.get("level"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

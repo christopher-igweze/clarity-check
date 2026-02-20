@@ -57,7 +57,13 @@ async def create_build(
     request: Request,
 ) -> BuildRun:
     user_id: str = request.state.user_id
-    return await build_store.create_build(user_id=user_id, request=request_body)
+    try:
+        return await build_store.create_build(user_id=user_id, request=request_body)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_dag", "message": str(exc)},
+        ) from exc
 
 
 @router.get("/v1/builds/{build_id}", response_model=BuildRun)

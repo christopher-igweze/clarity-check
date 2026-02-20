@@ -8,6 +8,7 @@ from uuid import UUID, uuid4
 
 from models.builds import BuildRun
 from models.runtime import RuntimeSession, RuntimeTickResult
+from orchestration.scheduler import compute_dag_levels
 from orchestration.telemetry import emit_runtime_metric
 
 
@@ -15,6 +16,7 @@ from orchestration.telemetry import emit_runtime_metric
 class RuntimeState:
     session: RuntimeSession
     executed_nodes: set[str]
+    level_cursor: int = 0
 
 
 class RuntimeGateway:
@@ -29,6 +31,12 @@ class RuntimeGateway:
                 state.session.updated_at = state.session.updated_at  # keep stable type updates
                 return state.session
 
+            dag_levels = build.metadata.get("dag_levels")
+            if not isinstance(dag_levels, list):
+                dag_levels = compute_dag_levels(build.dag)
+                build.metadata["dag_levels"] = dag_levels
+            level_cursor = int(build.metadata.get("level_cursor", 0))
+
             session = RuntimeSession(
                 runtime_id=uuid4(),
                 build_id=build.build_id,
@@ -37,16 +45,22 @@ class RuntimeGateway:
                     "repo_url": build.repo_url,
                     "objective": build.objective,
                     "dag_nodes": [node.node_id for node in build.dag],
+                    "level_count": len(dag_levels),
                 },
             )
             self._states[build.build_id] = RuntimeState(
                 session=session,
                 executed_nodes=set(),
+                level_cursor=max(0, level_cursor),
             )
             emit_runtime_metric(
                 metric="runtime_bootstrap",
                 tags={"build_id": str(build.build_id)},
-                fields={"runtime_id": str(session.runtime_id), "status": session.status},
+                fields={
+                    "runtime_id": str(session.runtime_id),
+                    "status": session.status,
+                    "level_count": len(dag_levels),
+                },
             )
             return session
 
@@ -59,6 +73,11 @@ class RuntimeGateway:
 
     async def tick(self, build: BuildRun) -> RuntimeTickResult:
         async with self._lock:
+            dag_levels = build.metadata.get("dag_levels")
+            if not isinstance(dag_levels, list):
+                dag_levels = compute_dag_levels(build.dag)
+                build.metadata["dag_levels"] = dag_levels
+
             state = self._states.get(build.build_id)
             if state is None:
                 session = RuntimeSession(
@@ -67,21 +86,46 @@ class RuntimeGateway:
                     status="running",
                     metadata={"auto_bootstrap": True},
                 )
-                state = RuntimeState(session=session, executed_nodes=set())
+                level_cursor = int(build.metadata.get("level_cursor", 0))
+                state = RuntimeState(
+                    session=session,
+                    executed_nodes=set(),
+                    level_cursor=max(0, level_cursor),
+                )
                 self._states[build.build_id] = state
 
             state.session.status = "running"
 
+            active_level = state.level_cursor if state.level_cursor < len(dag_levels) else None
+            level_node_ids = (
+                set(dag_levels[state.level_cursor])
+                if active_level is not None
+                else set()
+            )
             ready_nodes = [
                 node
                 for node in build.dag
-                if node.node_id not in state.executed_nodes
+                if node.node_id in level_node_ids
+                and node.node_id not in state.executed_nodes
                 and all(dep in state.executed_nodes for dep in node.depends_on)
             ]
             executed: list[str] = []
             for node in ready_nodes:
                 state.executed_nodes.add(node.node_id)
                 executed.append(node.node_id)
+
+            level_completed = None
+            level_started = None
+            if active_level is not None:
+                level_complete = all(
+                    node_id in state.executed_nodes for node_id in dag_levels[active_level]
+                )
+                if level_complete:
+                    level_completed = active_level
+                    if active_level + 1 < len(dag_levels):
+                        state.level_cursor = active_level + 1
+                        level_started = state.level_cursor
+                        build.metadata["level_cursor"] = state.level_cursor
 
             pending_nodes = [
                 node.node_id
@@ -102,6 +146,9 @@ class RuntimeGateway:
                     "pending": len(pending_nodes),
                     "finished": finished,
                     "status": state.session.status,
+                    "active_level": active_level,
+                    "level_started": level_started,
+                    "level_completed": level_completed,
                 },
             )
 
@@ -110,6 +157,9 @@ class RuntimeGateway:
                 runtime_id=state.session.runtime_id,
                 executed_nodes=executed,
                 pending_nodes=pending_nodes,
+                active_level=active_level,
+                level_started=level_started,
+                level_completed=level_completed,
                 finished=finished,
             )
 

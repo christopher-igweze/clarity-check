@@ -92,6 +92,19 @@ async def runtime_tick(build_id: UUID, request: Request) -> RuntimeTickResult:
 
     try:
         result = await runtime_gateway.tick(build)
+        if result.level_started is not None:
+            levels = build.metadata.get("dag_levels", [])
+            next_nodes = []
+            if isinstance(levels, list) and result.level_started < len(levels):
+                nodes_at_level = levels[result.level_started]
+                if isinstance(nodes_at_level, list):
+                    next_nodes = [str(node_id) for node_id in nodes_at_level]
+            await build_store.append_event(
+                build_id,
+                event_type="LEVEL_STARTED",
+                payload={"level": result.level_started, "nodes": next_nodes},
+            )
+
         for node_id in result.executed_nodes:
             task_run = await build_store.start_task_run(
                 build_id,
