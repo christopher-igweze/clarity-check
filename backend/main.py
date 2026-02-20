@@ -27,6 +27,7 @@ from api.routes import (
     github_oauth,
     webhook,
     vision_intake,
+    builds,
 )
 from config import settings
 
@@ -96,6 +97,7 @@ app.include_router(onboarding.router, prefix="/api", tags=["onboarding"])
 app.include_router(github_oauth.router, prefix="/api", tags=["github"])
 app.include_router(webhook.router, prefix="/api", tags=["webhook"])
 app.include_router(vision_intake.router, prefix="/api", tags=["vision-intake"])
+app.include_router(builds.router, tags=["builds"])
 
 
 # ------------------------------------------------------------------ #
