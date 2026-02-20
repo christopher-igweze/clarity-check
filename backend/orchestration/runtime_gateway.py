@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 
 from models.builds import BuildRun
 from models.runtime import RuntimeSession, RuntimeTickResult
-from orchestration.scheduler import compute_dag_levels
+from orchestration.scheduler import compute_dag_levels, find_level
 from orchestration.telemetry import emit_runtime_metric
 
 
@@ -70,6 +70,26 @@ class RuntimeGateway:
             if state is None:
                 return None
             return state.session
+
+    async def mark_node_for_retry(self, build: BuildRun, *, node_id: str) -> int | None:
+        async with self._lock:
+            state = self._states.get(build.build_id)
+            if state is None:
+                return None
+
+            if node_id in state.executed_nodes:
+                state.executed_nodes.remove(node_id)
+
+            dag_levels = build.metadata.get("dag_levels")
+            if not isinstance(dag_levels, list):
+                dag_levels = compute_dag_levels(build.dag)
+                build.metadata["dag_levels"] = dag_levels
+
+            retry_level = find_level(dag_levels, node_id=node_id)
+            if retry_level is not None:
+                state.level_cursor = min(state.level_cursor, retry_level)
+                build.metadata["level_cursor"] = state.level_cursor
+            return retry_level
 
     async def tick(self, build: BuildRun) -> RuntimeTickResult:
         async with self._lock:

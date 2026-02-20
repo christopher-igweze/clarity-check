@@ -235,6 +235,74 @@ class RuntimeRouteTests(unittest.TestCase):
         self.assertEqual(logs[0]["workspace_id"], "ws-daytona-1")
         self.assertEqual(logs[0]["status"], "failed")
 
+    def test_runtime_tick_retries_within_budget_then_completes(self) -> None:
+        build_id = self._create_build(
+            dag=[
+                {"node_id": "scanner", "title": "scan", "agent": "scanner", "depends_on": []},
+            ],
+            metadata={
+                "max_task_retries": 1,
+                "runner_results": {
+                    "scanner": {
+                        "runner": "daytona-openhands",
+                        "status_sequence": ["failed", "completed"],
+                        "error_sequence": ["transient install timeout", None],
+                    }
+                },
+            },
+        )
+        self.client.post(f"/v1/builds/{build_id}/runtime/bootstrap")
+
+        tick_one = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+        self.assertEqual(tick_one.status_code, 200)
+        self.assertFalse(tick_one.json()["finished"])
+
+        build_mid = self.client.get(f"/v1/builds/{build_id}").json()
+        self.assertEqual(build_mid["status"], "running")
+        self.assertGreaterEqual(len(build_mid["replan_history"]), 1)
+        self.assertEqual(build_mid["replan_history"][0]["action"], "CONTINUE")
+
+        tick_two = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+        self.assertEqual(tick_two.status_code, 200)
+        self.assertTrue(tick_two.json()["finished"])
+
+        build_final = self.client.get(f"/v1/builds/{build_id}").json()
+        self.assertEqual(build_final["status"], "completed")
+
+        tasks = self.client.get(f"/v1/builds/{build_id}/tasks").json()
+        self.assertEqual(len(tasks), 2)
+        statuses = {task["status"] for task in tasks}
+        self.assertIn("failed", statuses)
+        self.assertIn("completed", statuses)
+
+    def test_runtime_tick_fails_after_retry_budget_exhausted(self) -> None:
+        build_id = self._create_build(
+            dag=[
+                {"node_id": "scanner", "title": "scan", "agent": "scanner", "depends_on": []},
+            ],
+            metadata={
+                "max_task_retries": 1,
+                "runner_results": {
+                    "scanner": {
+                        "status_sequence": ["failed", "failed"],
+                        "error_sequence": ["attempt 1", "attempt 2"],
+                    }
+                },
+            },
+        )
+        self.client.post(f"/v1/builds/{build_id}/runtime/bootstrap")
+
+        first_tick = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+        self.assertEqual(first_tick.status_code, 200)
+        self.assertFalse(first_tick.json()["finished"])
+
+        second_tick = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+        self.assertEqual(second_tick.status_code, 200)
+
+        build_payload = self.client.get(f"/v1/builds/{build_id}").json()
+        self.assertEqual(build_payload["status"], "failed")
+        self.assertGreaterEqual(len(build_payload["replan_history"]), 1)
+
     def test_runtime_tick_executes_single_level_per_tick(self) -> None:
         build_id = self._create_build(
             dag=[
