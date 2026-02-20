@@ -431,6 +431,23 @@ class BuildStore:
             )
             return task_run
 
+    async def complete_task_run(
+        self,
+        build_id: UUID,
+        *,
+        task_run_id: UUID,
+        status: TaskStatus,
+        error: str | None = None,
+        source: str = "manual",
+    ) -> TaskRun:
+        return await self.finish_task_run(
+            build_id,
+            task_run_id=task_run_id,
+            status=status,
+            error=error,
+            source=source,
+        )
+
     async def list_task_runs(
         self,
         build_id: UUID,

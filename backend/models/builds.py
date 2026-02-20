@@ -174,3 +174,12 @@ class BuildGateDecisionRequest(BaseModel):
     status: GateDecisionStatus = GateDecisionStatus.pass_
     reason: str = "manual_gate_decision"
     node_id: str | None = None
+
+
+class TaskRunStartRequest(BaseModel):
+    node_id: str
+
+
+class TaskRunCompleteRequest(BaseModel):
+    status: TaskStatus = TaskStatus.completed
+    error: str | None = None

@@ -21,6 +21,8 @@ from models.builds import (
     GateDecision,
     GateType,
     TaskRun,
+    TaskRunCompleteRequest,
+    TaskRunStartRequest,
     TaskStatus,
     BuildStatus,
 )
@@ -105,6 +107,73 @@ async def get_task_run(build_id: UUID, task_run_id: UUID) -> TaskRun:
             detail={"code": "task_run_not_found", "message": "Task run not found."},
         )
     return task_run
+
+
+@router.post("/v1/builds/{build_id}/tasks", response_model=TaskRun)
+@limiter.limit(rate_limit_string())
+async def start_task_run(
+    build_id: UUID,
+    request_body: TaskRunStartRequest,
+    request: Request,
+) -> TaskRun:
+    _ = request.state.user_id
+    try:
+        return await build_store.start_task_run(
+            build_id,
+            node_id=request_body.node_id,
+            source="manual",
+        )
+    except KeyError as exc:
+        code = str(exc)
+        if "dag_node_not_found" in code:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "dag_node_not_found", "message": "DAG node not found."},
+            ) from exc
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "task_run_conflict", "message": str(exc)},
+        ) from exc
+
+
+@router.post("/v1/builds/{build_id}/tasks/{task_run_id}/complete", response_model=TaskRun)
+@limiter.limit(rate_limit_string())
+async def complete_task_run(
+    build_id: UUID,
+    task_run_id: UUID,
+    request_body: TaskRunCompleteRequest,
+    request: Request,
+) -> TaskRun:
+    _ = request.state.user_id
+    try:
+        return await build_store.complete_task_run(
+            build_id,
+            task_run_id=task_run_id,
+            status=request_body.status,
+            error=request_body.error,
+            source="manual",
+        )
+    except KeyError as exc:
+        code = str(exc)
+        if "task_run_not_found" in code:
+            raise HTTPException(
+                status_code=404,
+                detail={"code": "task_run_not_found", "message": "Task run not found."},
+            ) from exc
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": "task_run_conflict", "message": str(exc)},
+        ) from exc
 
 
 @router.get("/v1/builds/{build_id}/gates", response_model=list[GateDecision])
