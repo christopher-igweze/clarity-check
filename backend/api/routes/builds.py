@@ -11,7 +11,14 @@ from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 from api.middleware.rate_limit import limiter, rate_limit_string
-from models.builds import BuildCreateRequest, BuildRun, BuildStatus
+from models.builds import (
+    BuildCheckpoint,
+    BuildCheckpointRequest,
+    BuildCreateRequest,
+    BuildRun,
+    BuildRunSummary,
+    BuildStatus,
+)
 from orchestration.prompt_contracts import list_prompt_contracts
 from orchestration.store import build_store
 
@@ -20,6 +27,20 @@ router = APIRouter()
 
 class BuildActionRequest(BaseModel):
     reason: str | None = None
+
+
+@router.get("/v1/builds", response_model=list[BuildRunSummary])
+async def list_builds(
+    request: Request,
+    status: BuildStatus | None = None,
+    limit: int = 20,
+) -> list[BuildRunSummary]:
+    user_id: str = request.state.user_id
+    return await build_store.list_builds(
+        user_id=user_id,
+        status=status,
+        limit=limit,
+    )
 
 
 @router.post("/v1/builds", response_model=BuildRun)
@@ -150,8 +171,38 @@ async def stream_build_events(build_id: UUID) -> EventSourceResponse:
     )
 
 
+@router.get("/v1/builds/{build_id}/checkpoints", response_model=list[BuildCheckpoint])
+async def list_build_checkpoints(build_id: UUID) -> list[BuildCheckpoint]:
+    build = await build_store.get_build(build_id)
+    if build is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        )
+    return await build_store.list_checkpoints(build_id)
+
+
+@router.post("/v1/builds/{build_id}/checkpoints", response_model=BuildCheckpoint)
+@limiter.limit(rate_limit_string())
+async def create_build_checkpoint(
+    build_id: UUID,
+    request_body: BuildCheckpointRequest,
+    request: Request,
+) -> BuildCheckpoint:
+    _ = request.state.user_id
+    try:
+        return await build_store.create_checkpoint(
+            build_id,
+            reason=request_body.reason,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+
+
 @router.get("/v1/prompt-contracts")
 async def get_prompt_contracts() -> list[dict]:
     """Expose current prompt contract registry for build/runtime alignment."""
     return [contract.__dict__ for contract in list_prompt_contracts()]
-
