@@ -183,3 +183,22 @@ class TaskRunStartRequest(BaseModel):
 class TaskRunCompleteRequest(BaseModel):
     status: TaskStatus = TaskStatus.completed
     error: str | None = None
+
+
+class ReplanDecisionRequest(BaseModel):
+    action: ReplanAction = ReplanAction.continue_
+    reason: str = "manual_replan"
+    replacement_nodes: list[DagNode] = Field(default_factory=list)
+
+
+class DebtItemRequest(BaseModel):
+    node_id: str
+    summary: str
+    severity: str = "medium"
+
+
+class PolicyViolationRequest(BaseModel):
+    code: str
+    message: str
+    source: str = "policy_engine"
+    blocking: bool = True
