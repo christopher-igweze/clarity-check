@@ -227,6 +227,31 @@ class BuildRouteTests(unittest.TestCase):
         self.assertEqual(target["task_completed"], 0)
         self.assertEqual(target["task_failed"], 1)
 
+    def test_create_build_rejects_cyclic_dag(self) -> None:
+        resp = self.client.post(
+            "/v1/builds",
+            json={
+                "repo_url": "https://github.com/octocat/Hello-World",
+                "objective": "invalid dag",
+                "dag": [
+                    {
+                        "node_id": "a",
+                        "title": "A",
+                        "agent": "scanner",
+                        "depends_on": ["b"],
+                    },
+                    {
+                        "node_id": "b",
+                        "title": "B",
+                        "agent": "builder",
+                        "depends_on": ["a"],
+                    },
+                ],
+            },
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["detail"]["code"], "invalid_dag")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -28,6 +28,9 @@ class RuntimeTickResult(BaseModel):
     runtime_id: UUID
     executed_nodes: list[str] = Field(default_factory=list)
     pending_nodes: list[str] = Field(default_factory=list)
+    active_level: int | None = None
+    level_started: int | None = None
+    level_completed: int | None = None
     finished: bool = False
 
 

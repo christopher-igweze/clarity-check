@@ -23,6 +23,7 @@ from models.builds import (
     TaskStatus,
     utc_now,
 )
+from orchestration.scheduler import compute_dag_levels
 from orchestration.telemetry import emit_orchestration_event
 
 
@@ -61,6 +62,11 @@ class BuildStore:
         async with self._lock:
             build_id = uuid4()
             now = utc_now()
+            dag = request.dag or _default_dag()
+            dag_levels = compute_dag_levels(dag)
+            metadata = dict(request.metadata)
+            metadata["dag_levels"] = dag_levels
+            metadata["level_cursor"] = 0
             build = BuildRun(
                 build_id=build_id,
                 created_by=user_id,
@@ -69,8 +75,8 @@ class BuildStore:
                 status=BuildStatus.pending,
                 created_at=now,
                 updated_at=now,
-                dag=request.dag or _default_dag(),
-                metadata=request.metadata,
+                dag=dag,
+                metadata=metadata,
             )
             self._builds[build_id] = build
             self._transition_build_status_unlocked(
@@ -91,9 +97,7 @@ class BuildStore:
                 )
             )
             if build.dag:
-                level_zero_nodes = [
-                    node.node_id for node in build.dag if not node.depends_on
-                ]
+                level_zero_nodes = dag_levels[0] if dag_levels else []
                 self._append_event_unlocked(
                     BuildEvent(
                         event_type="LEVEL_STARTED",
