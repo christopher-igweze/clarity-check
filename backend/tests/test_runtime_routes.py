@@ -35,6 +35,9 @@ class RuntimeRouteTests(unittest.TestCase):
         app.include_router(runtime.router)
         cls.client = TestClient(app)
 
+    def setUp(self) -> None:
+        builds.limiter.reset()
+
     def _create_build(self) -> str:
         resp = self.client.post(
             "/v1/builds",

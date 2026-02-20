@@ -15,6 +15,8 @@ from models.builds import (
     BuildRunSummary,
     BuildStatus,
     DagNode,
+    TaskRun,
+    TaskStatus,
     utc_now,
 )
 
@@ -112,6 +114,13 @@ class BuildStore:
                     status=row.status,
                     created_at=row.created_at,
                     updated_at=row.updated_at,
+                    task_total=len(row.task_runs),
+                    task_completed=sum(
+                        1 for task in row.task_runs if task.status == TaskStatus.completed
+                    ),
+                    task_failed=sum(
+                        1 for task in row.task_runs if task.status == TaskStatus.failed
+                    ),
                 )
                 for row in rows
             ]
@@ -211,6 +220,125 @@ class BuildStore:
         async with self._lock:
             return list(self._events.get(build_id, []))
 
+    async def start_task_run(self, build_id: UUID, *, node_id: str) -> TaskRun:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            if not any(node.node_id == node_id for node in build.dag):
+                raise KeyError("dag_node_not_found")
+
+            previous_attempt = max(
+                (task.attempt for task in build.task_runs if task.node_id == node_id),
+                default=0,
+            )
+            task_run = TaskRun(
+                task_run_id=uuid4(),
+                node_id=node_id,
+                attempt=previous_attempt + 1,
+                status=TaskStatus.running,
+                started_at=utc_now(),
+            )
+            build.task_runs.append(task_run)
+            self._set_node_status_unlocked(build=build, node_id=node_id, status=TaskStatus.running)
+            build.updated_at = task_run.started_at
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type="TASK_STARTED",
+                    build_id=build_id,
+                    payload={
+                        "task_run_id": str(task_run.task_run_id),
+                        "node_id": node_id,
+                        "attempt": task_run.attempt,
+                    },
+                )
+            )
+            return task_run
+
+    async def complete_task_run(
+        self,
+        build_id: UUID,
+        *,
+        task_run_id: UUID,
+        status: TaskStatus,
+        error: str | None = None,
+    ) -> TaskRun:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+
+            task_run = next(
+                (task for task in build.task_runs if task.task_run_id == task_run_id),
+                None,
+            )
+            if task_run is None:
+                raise KeyError("task_run_not_found")
+            if task_run.status in {TaskStatus.completed, TaskStatus.failed, TaskStatus.skipped}:
+                raise ValueError("task_run_already_finalized")
+            if status not in {TaskStatus.completed, TaskStatus.failed, TaskStatus.skipped}:
+                raise ValueError("task_run_invalid_final_status")
+
+            task_run.status = status
+            task_run.finished_at = utc_now()
+            task_run.error = error
+            build.updated_at = task_run.finished_at
+            self._set_node_status_unlocked(
+                build=build,
+                node_id=task_run.node_id,
+                status=status,
+            )
+
+            event_type_map = {
+                TaskStatus.completed: "TASK_COMPLETED",
+                TaskStatus.failed: "TASK_FAILED",
+                TaskStatus.skipped: "TASK_SKIPPED",
+            }
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type=event_type_map[status],
+                    build_id=build_id,
+                    payload={
+                        "task_run_id": str(task_run.task_run_id),
+                        "node_id": task_run.node_id,
+                        "attempt": task_run.attempt,
+                        "error": error,
+                    },
+                )
+            )
+            return task_run
+
+    async def list_task_runs(
+        self,
+        build_id: UUID,
+        *,
+        node_id: str | None = None,
+        status: TaskStatus | None = None,
+        limit: int = 200,
+    ) -> list[TaskRun]:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+
+            rows = list(build.task_runs)
+            if node_id is not None:
+                rows = [row for row in rows if row.node_id == node_id]
+            if status is not None:
+                rows = [row for row in rows if row.status == status]
+            rows.sort(key=lambda row: row.started_at, reverse=True)
+            return rows[: max(1, min(limit, 500))]
+
+    async def get_task_run(self, build_id: UUID, task_run_id: UUID) -> TaskRun | None:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            return next(
+                (row for row in build.task_runs if row.task_run_id == task_run_id),
+                None,
+            )
+
     async def append_event(
         self,
         build_id: UUID,
@@ -269,6 +397,18 @@ class BuildStore:
                 },
             )
         )
+
+    def _set_node_status_unlocked(
+        self,
+        *,
+        build: BuildRun,
+        node_id: str,
+        status: TaskStatus,
+    ) -> None:
+        for node in build.dag:
+            if node.node_id == node_id:
+                node.status = status
+                return
 
 
 build_store = BuildStore()

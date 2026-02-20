@@ -121,6 +121,9 @@ class BuildRunSummary(BaseModel):
     status: BuildStatus
     created_at: datetime
     updated_at: datetime
+    task_total: int = 0
+    task_completed: int = 0
+    task_failed: int = 0
 
 
 class BuildCreateRequest(BaseModel):
@@ -132,3 +135,12 @@ class BuildCreateRequest(BaseModel):
 
 class BuildCheckpointRequest(BaseModel):
     reason: str = "manual_checkpoint"
+
+
+class TaskRunStartRequest(BaseModel):
+    node_id: str
+
+
+class TaskRunCompleteRequest(BaseModel):
+    status: TaskStatus = TaskStatus.completed
+    error: str | None = None

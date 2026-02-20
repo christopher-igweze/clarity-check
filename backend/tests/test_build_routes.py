@@ -32,6 +32,9 @@ class BuildRouteTests(unittest.TestCase):
         app.include_router(builds.router)
         cls.client = TestClient(app)
 
+    def setUp(self) -> None:
+        builds.limiter.reset()
+
     @staticmethod
     def _create_payload() -> dict:
         return {
@@ -134,6 +137,70 @@ class BuildRouteTests(unittest.TestCase):
         self.assertIn("event: BUILD_ABORTED", events_resp.text)
         self.assertIn("event: BUILD_FINISHED", events_resp.text)
         self.assertIn("event: CHECKPOINT_CREATED", events_resp.text)
+
+    def test_task_run_lifecycle_and_retrieval(self) -> None:
+        create_resp = self.client.post("/v1/builds", json=self._create_payload())
+        self.assertEqual(create_resp.status_code, 200)
+        build_id = create_resp.json()["build_id"]
+        node_id = create_resp.json()["dag"][0]["node_id"]
+
+        start_resp = self.client.post(
+            f"/v1/builds/{build_id}/tasks",
+            json={"node_id": node_id},
+        )
+        self.assertEqual(start_resp.status_code, 200)
+        task_run = start_resp.json()
+        self.assertEqual(task_run["node_id"], node_id)
+        self.assertEqual(task_run["status"], "running")
+
+        complete_resp = self.client.post(
+            f"/v1/builds/{build_id}/tasks/{task_run['task_run_id']}/complete",
+            json={"status": "completed"},
+        )
+        self.assertEqual(complete_resp.status_code, 200)
+        self.assertEqual(complete_resp.json()["status"], "completed")
+
+        list_resp = self.client.get(f"/v1/builds/{build_id}/tasks")
+        self.assertEqual(list_resp.status_code, 200)
+        rows = list_resp.json()
+        self.assertGreaterEqual(len(rows), 1)
+        self.assertEqual(rows[0]["task_run_id"], task_run["task_run_id"])
+
+        get_resp = self.client.get(
+            f"/v1/builds/{build_id}/tasks/{task_run['task_run_id']}"
+        )
+        self.assertEqual(get_resp.status_code, 200)
+        self.assertEqual(get_resp.json()["status"], "completed")
+
+        running_filter_resp = self.client.get(
+            f"/v1/builds/{build_id}/tasks?status=running"
+        )
+        self.assertEqual(running_filter_resp.status_code, 200)
+        self.assertEqual(len(running_filter_resp.json()), 0)
+
+    def test_list_builds_includes_task_counts(self) -> None:
+        create_resp = self.client.post("/v1/builds", json=self._create_payload())
+        build_id = create_resp.json()["build_id"]
+        node_id = create_resp.json()["dag"][0]["node_id"]
+
+        start_resp = self.client.post(
+            f"/v1/builds/{build_id}/tasks",
+            json={"node_id": node_id},
+        )
+        task_run_id = start_resp.json()["task_run_id"]
+        self.client.post(
+            f"/v1/builds/{build_id}/tasks/{task_run_id}/complete",
+            json={"status": "failed", "error": "unit_test_failure"},
+        )
+
+        list_resp = self.client.get("/v1/builds?limit=10")
+        self.assertEqual(list_resp.status_code, 200)
+        rows = list_resp.json()
+        target = next((row for row in rows if row["build_id"] == build_id), None)
+        self.assertIsNotNone(target)
+        self.assertEqual(target["task_total"], 1)
+        self.assertEqual(target["task_completed"], 0)
+        self.assertEqual(target["task_failed"], 1)
 
 
 if __name__ == "__main__":
