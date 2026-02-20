@@ -29,6 +29,7 @@ from api.routes import (
     vision_intake,
     builds,
     runtime,
+    validation,
 )
 from config import settings
 
@@ -100,6 +101,7 @@ app.include_router(webhook.router, prefix="/api", tags=["webhook"])
 app.include_router(vision_intake.router, prefix="/api", tags=["vision-intake"])
 app.include_router(builds.router, tags=["builds"])
 app.include_router(runtime.router, tags=["runtime"])
+app.include_router(validation.router, tags=["validation"])
 
 
 # ------------------------------------------------------------------ #
