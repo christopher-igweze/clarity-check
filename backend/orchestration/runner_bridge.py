@@ -47,6 +47,7 @@ class RunnerBridge:
     ) -> RuntimeRunLog:
         async with self._lock:
             node_overrides = self._resolve_node_override(build, node_id)
+            self._advance_override_sequences(node_overrides)
             runner = str(node_overrides.get("runner") or build.metadata.get("runner_kind") or "openhands")
             workspace_id = str(
                 node_overrides.get("workspace_id")
@@ -118,6 +119,16 @@ class RunnerBridge:
         return node.agent if node is not None else "unknown"
 
     @staticmethod
+    def _advance_override_sequences(node_overrides: dict) -> None:
+        status_sequence = node_overrides.get("status_sequence")
+        if isinstance(status_sequence, list) and status_sequence:
+            node_overrides["status"] = status_sequence.pop(0)
+
+        error_sequence = node_overrides.get("error_sequence")
+        if isinstance(error_sequence, list) and error_sequence:
+            node_overrides["error"] = error_sequence.pop(0)
+
+    @staticmethod
     def _normalize_duration(raw: object) -> int:
         if isinstance(raw, int):
             return max(0, raw)
@@ -133,4 +144,3 @@ class RunnerBridge:
 
 
 runner_bridge = RunnerBridge()
-

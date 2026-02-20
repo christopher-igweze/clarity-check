@@ -7,7 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 
 from api.middleware.rate_limit import limiter, rate_limit_string
-from models.builds import BuildStatus, GateDecisionStatus, GateType, TaskStatus
+from models.builds import BuildStatus, GateDecisionStatus, GateType, ReplanAction, TaskStatus
 from models.runtime import (
     RuntimeMetric,
     RuntimeRunLog,
@@ -166,6 +166,38 @@ async def runtime_tick(build_id: UUID, request: Request) -> RuntimeTickResult:
                     error=run_log.error or run_log.message,
                     source="runtime_tick",
                 )
+                retry_budget = max(0, int(build.metadata.get("max_task_retries", 0)))
+                should_retry = task_run.attempt <= retry_budget
+
+                if should_retry:
+                    retry_level = await runtime_gateway.mark_node_for_retry(
+                        build,
+                        node_id=node_id,
+                    )
+                    await build_store.record_replan_decision(
+                        build_id,
+                        action=ReplanAction.continue_,
+                        reason=f"retry_node:{node_id}:attempt_{task_run.attempt}",
+                        replacement_nodes=[],
+                        source="runtime_tick",
+                    )
+                    await build_store.append_event(
+                        build_id,
+                        event_type="TASK_RETRY_SCHEDULED",
+                        payload={
+                            "node_id": node_id,
+                            "attempt": task_run.attempt,
+                            "next_attempt": task_run.attempt + 1,
+                            "retry_budget": retry_budget,
+                            "retry_level": retry_level,
+                        },
+                    )
+                    result.finished = False
+                    if node_id not in result.pending_nodes:
+                        result.pending_nodes.append(node_id)
+                        result.pending_nodes.sort()
+                    continue
+
                 await build_store.record_gate_decision(
                     build_id,
                     gate=GateType.policy,
