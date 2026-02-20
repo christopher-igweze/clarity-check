@@ -1,0 +1,181 @@
+> ## Documentation Index
+> Fetch the complete documentation index at: https://docs.openhands.dev/llms.txt
+> Use this file to discover all available pages before exploring further.
+
+# PR Review
+
+> Use OpenHands Agent to generate meaningful pull request review
+
+> The reference workflow is available [here](#reference-workflow)!
+
+Automatically review pull requests, providing feedback on code quality, security, and best practices. Reviews can be triggered in two ways:
+
+* Requesting `openhands-agent` as a reviewer
+* Adding the `review-this` label to the PR
+
+<Note>
+  The reference workflow triggers on either the "review-this" label or when the openhands-agent account is requested as a reviewer. In OpenHands organization repositories, openhands-agent has access, so this works as-is. In your own repositories, requesting openhands-agent will only work if that account is added as a collaborator or is part of a team with access. If you don't plan to grant access, use the label trigger instead, or change the condition to a reviewer handle that exists in your repo.
+</Note>
+
+## Quick Start
+
+```bash  theme={null}
+# 1. Copy workflow to your repository
+cp examples/03_github_workflows/02_pr_review/workflow.yml .github/workflows/pr-review.yml
+
+# 2. Configure secrets in GitHub Settings → Secrets
+# Add: LLM_API_KEY
+
+# 3. (Optional) Create a "review-this" label in your repository
+# Go to Issues → Labels → New label
+# You can also trigger reviews by requesting "openhands-agent" as a reviewer
+```
+
+## Features
+
+* **Fast Reviews** - Results posted on the PR in only 2 or 3 minutes
+* **Comprehensive Analysis** - Analyzes the changes given the repository context. Covers code quality, security, best practices
+* **GitHub Integration** - Posts comments directly to the PR
+* **Customizable** - Add your own code review guidelines without forking
+
+## Security
+
+* Users with write access (maintainers) can trigger reviews by requesting `openhands-agent` as a reviewer or adding the `review-this` label.
+* Maintainers need to read the PR to make sure it's safe to run.
+
+## Customizing the Code Review
+
+Instead of forking the `agent_script.py`, you can customize the code review behavior by adding a `.agents/skills/code-review.md` file to your repository. This is the **recommended approach** for customization.
+
+### How It Works
+
+The PR review agent uses skills from the [OpenHands/skills](https://github.com/OpenHands/skills) repository by default. When you add a `.openhands/skills/code-review.md` file to your repository, it **overrides** the default skill with your custom guidelines.
+
+### Example: Custom Code Review Skill
+
+Create `.openhands/skills/code-review.md` in your repository:
+
+```markdown  theme={null}
+---
+name: code-review
+description: Custom code review guidelines for my project
+triggers:
+- /codereview
+---
+
+# My Project Code Review Guidelines
+
+You are a code reviewer for this project. Follow these guidelines:
+
+## Review Decisions
+
+- **APPROVE** straightforward changes (config updates, typo fixes, documentation)
+- **COMMENT** when you have feedback or concerns
+
+## What to Check
+
+- Code follows our project conventions
+- Tests are included for new functionality
+- No security vulnerabilities introduced
+- Documentation is updated if needed
+
+## Communication Style
+
+- Be direct and constructive
+- Use GitHub suggestion syntax for code fixes
+- Approve quickly when code is good
+```
+
+### Benefits of Custom Skills
+
+1. **No forking required**: Keep using the official SDK while customizing behavior
+2. **Version controlled**: Your review guidelines live in your repository
+3. **Easy updates**: SDK updates don't overwrite your customizations
+4. **Team alignment**: Everyone uses the same review standards
+
+<Note>
+  See the [software-agent-sdk's own code-review skill](https://github.com/OpenHands/software-agent-sdk/blob/main/.openhands/skills/code-review.md) for a complete example of a custom code review skill.
+</Note>
+
+## Reference Workflow
+
+<Note>
+  This example is available on GitHub: [examples/03\_github\_workflows/02\_pr\_review/](https://github.com/OpenHands/software-agent-sdk/tree/main/examples/03_github_workflows/02_pr_review)
+</Note>
+
+```yaml icon="yaml" expandable examples/03_github_workflows/02_pr_review/workflow.yml theme={null}
+---
+# OpenHands PR Review Workflow
+#
+# To set this up:
+#  1. Copy this file to .github/workflows/pr-review.yml in your repository
+#  2. Add LLM_API_KEY to repository secrets
+#  3. Customize the inputs below as needed
+#  4. Commit this file to your repository
+#  5. Trigger the review by either:
+#     - Adding the "review-this" label to any PR, OR
+#     - Requesting openhands-agent as a reviewer
+#
+# For more information, see:
+# https://github.com/OpenHands/software-agent-sdk/tree/main/examples/03_github_workflows/02_pr_review
+name: PR Review by OpenHands
+
+on:
+    # Trigger when a label is added or a reviewer is requested
+    pull_request:
+        types: [labeled, review_requested]
+
+permissions:
+    contents: read
+    pull-requests: write
+    issues: write
+
+jobs:
+    pr-review:
+        # Run when review-this label is added OR openhands-agent is requested as reviewer
+        if: |
+            github.event.label.name == 'review-this' ||
+            github.event.requested_reviewer.login == 'openhands-agent'
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout for composite action
+              uses: actions/checkout@v4
+              with:
+                  repository: OpenHands/software-agent-sdk
+                  # Use a specific version tag or branch (e.g., 'v1.0.0' or 'main')
+                  ref: main
+                  sparse-checkout: .github/actions/pr-review
+
+            - name: Run PR Review
+              uses: ./.github/actions/pr-review
+              with:
+                  # LLM configuration
+                  llm-model: anthropic/claude-sonnet-4-5-20250929
+                  llm-base-url: ''
+                  # Review style: roasted (other option: standard)
+                  review-style: roasted
+                  # SDK version to use (version tag or branch name)
+                  sdk-version: main
+                  # Secrets
+                  llm-api-key: ${{ secrets.LLM_API_KEY }}
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+### Action Inputs
+
+| Input          | Description                                  | Required | Default                        |
+| -------------- | -------------------------------------------- | -------- | ------------------------------ |
+| `llm-model`    | LLM model to use                             | Yes      | -                              |
+| `llm-base-url` | LLM base URL (optional)                      | No       | `''`                           |
+| `review-style` | Review style: 'standard' or 'roasted'        | No       | `roasted`                      |
+| `sdk-version`  | Git ref for SDK (tag, branch, or commit SHA) | No       | `main`                         |
+| `sdk-repo`     | SDK repository (owner/repo)                  | No       | `OpenHands/software-agent-sdk` |
+| `llm-api-key`  | LLM API key                                  | Yes      | -                              |
+| `github-token` | GitHub token for API access                  | Yes      | -                              |
+
+## Related Files
+
+* [Agent Script](https://github.com/OpenHands/software-agent-sdk/blob/main/examples/03_github_workflows/02_pr_review/agent_script.py)
+* [Workflow File](https://github.com/OpenHands/software-agent-sdk/blob/main/examples/03_github_workflows/02_pr_review/workflow.yml)
+* [Prompt Template](https://github.com/OpenHands/software-agent-sdk/blob/main/examples/03_github_workflows/02_pr_review/prompt.py)
+* [Composite Action](https://github.com/OpenHands/software-agent-sdk/blob/main/.github/actions/pr-review/action.yml)

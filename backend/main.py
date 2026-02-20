@@ -18,7 +18,17 @@ from slowapi.middleware import SlowAPIMiddleware
 
 from api.middleware.auth import SupabaseAuthMiddleware
 from api.middleware.rate_limit import limiter
-from api.routes import audit, status, fix
+from api.routes import (
+    audit,
+    status,
+    fix,
+    primer,
+    onboarding,
+    github_oauth,
+    webhook,
+    vision_intake,
+)
+from config import settings
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +41,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Clarity Check API starting up...")
+    if settings.tier1_enabled:
+        await audit.cleanup_tier1_expired()
     yield
     logger.info("Clarity Check API shutting down.")
 
@@ -38,10 +50,10 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Clarity Check API",
     description=(
-        "AI-powered code audit API.  Five specialised OpenHands agents "
-        "(Scanner → Builder → Security → Planner → Educator) analyse a "
-        "GitHub repository and produce a prioritised remediation report "
-        "with real-time SSE streaming."
+        "AI-powered code audit API. Hermes orchestrates specialist agents "
+        "(Primer → Scanner → Evolution → Builder → Security → Planner → Educator) "
+        "to analyze a GitHub repository and produce a prioritised remediation "
+        "report with real-time SSE streaming."
     ),
     version="1.0.0",
     lifespan=lifespan,
@@ -79,6 +91,11 @@ app.add_middleware(SupabaseAuthMiddleware)
 app.include_router(audit.router, prefix="/api", tags=["audit"])
 app.include_router(status.router, prefix="/api", tags=["streaming"])
 app.include_router(fix.router, prefix="/api", tags=["fix"])
+app.include_router(primer.router, prefix="/api", tags=["primer"])
+app.include_router(onboarding.router, prefix="/api", tags=["onboarding"])
+app.include_router(github_oauth.router, prefix="/api", tags=["github"])
+app.include_router(webhook.router, prefix="/api", tags=["webhook"])
+app.include_router(vision_intake.router, prefix="/api", tags=["vision-intake"])
 
 
 # ------------------------------------------------------------------ #

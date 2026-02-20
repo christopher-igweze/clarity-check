@@ -1,6 +1,6 @@
 # Implementation Plan — Clarity Check
 
-**Last updated:** 2026-02-15
+**Last updated:** 2026-02-20
 **Source of truth:** `PRD.md` (Technical PRD v2.1)
 
 ---
@@ -93,21 +93,21 @@ The React frontend is fully built (pages, components, auth, routing) but current
 
 ### 2.1 API client (`src/lib/api.ts`)
 
-- [ ] Replace `streamSurfaceScan()` (calls Edge Function `surface-scan`) with a call to `POST /api/audit` + `GET /api/status/{scan_id}` SSE
+- [x] Replace `streamSurfaceScan()` (calls Edge Function `surface-scan`) with a call to `POST /api/audit` + `GET /api/status/{scan_id}` SSE
 - [ ] Replace `callSecurityReview()` (calls Edge Function `security-review`) — no longer needed; security agent is part of the pipeline
 - [ ] Replace `streamDeepProbe()` (calls Edge Function `deep-probe`) — no longer needed; builder agent is part of the pipeline
-- [ ] Keep or refactor `streamVisionIntake()` — currently calls Edge Function `vision-intake`; decide whether vision intake moves to the Python backend or stays as a standalone edge function
-- [ ] Add `startAudit(repoUrl, vibePrompt?, projectCharter?)` — POST to `/api/audit`, return `scan_id`
-- [ ] Add `streamScanStatus(scanId, onEvent)` — EventSource to `/api/status/{scan_id}`
+- [x] Keep or refactor `streamVisionIntake()` — moved to Python backend `/api/vision-intake`
+- [x] Add `startAudit(repoUrl, vibePrompt?, projectCharter?)` — POST to `/api/audit`, return `scan_id`
+- [x] Add `streamScanStatus(scanId, onEvent)` — EventSource to `/api/status/{scan_id}`
 - [ ] Add proper auth header injection (Supabase JWT)
 
 ### 2.2 ScanLive page (`src/pages/ScanLive.tsx`)
 
-- [ ] Remove call chain: `fetchRepoContents` → `streamSurfaceScan` → `callSecurityReview` → `streamDeepProbe`
-- [ ] Replace with: `startAudit()` → `streamScanStatus()` — single SSE stream for the entire pipeline
+- [x] Remove call chain: `fetchRepoContents` → `streamSurfaceScan` → `callSecurityReview` → `streamDeepProbe`
+- [x] Replace with: `startAudit()` → `streamScanStatus()` — single SSE stream for the entire pipeline
 - [ ] Update `LogEntry` type to match `AgentLogEntry` model from backend (`event_type`, `agent`, `message`, `level`, `data`)
 - [ ] Update `agentColors` map to match backend agent names (`scanner`, `builder`, `security`, `planner`, `educator`, `orchestrator`)
-- [ ] Wire health score and findings from `scan_complete` event to navigate to Report page
+- [x] Wire health score and findings from `scan_complete` event to navigate to Report page
 
 ### 2.3 Report page (`src/pages/Report.tsx`)
 
@@ -123,12 +123,12 @@ The React frontend is fully built (pages, components, auth, routing) but current
 
 ### 2.5 NewScan page (`src/pages/NewScan.tsx`)
 
-- [ ] Wire form submit to new `startAudit()` API client function
-- [ ] Navigate to ScanLive with `scan_id` from response (instead of passing repoUrl/content in route state)
+- [x] Wire form submit to new `startAudit()` API client function
+- [x] Navigate to ScanLive with `scan_id` from response (instead of passing repoUrl/content in route state)
 
 ### 2.6 Cleanup
 
-- [ ] Remove legacy Supabase Edge Function references from frontend
+- [x] Remove legacy Supabase Edge Function references from frontend
 - [ ] Delete `supabase/functions/` directory if it still exists (Edge Functions are replaced by Python backend)
 - [ ] Update `.env` / `VITE_*` variables if the backend URL differs from Supabase Functions URL
 
@@ -182,7 +182,7 @@ The React frontend is fully built (pages, components, auth, routing) but current
 
 ### 4.3 Security & abuse prevention
 
-- [ ] Network policy enforcement in sandbox (`sandbox/network_policy.py`)
+- [~] Network policy enforcement in sandbox (`sandbox/network_policy.py`)
 - [ ] Rate limiting tuning — per-user, per-IP, burst caps
 - [ ] Input validation — repo URL sanitisation, size limits
 - [ ] Secrets management audit — ensure no keys in code/images
@@ -196,9 +196,9 @@ The React frontend is fully built (pages, components, auth, routing) but current
 
 ### 4.5 Missing backend files from PRD
 
-- [ ] `sandbox/executor.py` — dedicated command execution abstraction
-- [ ] `sandbox/network_policy.py` — whitelist/blacklist rules for sandbox networking
-- [ ] `api/routes/webhook.py` — GitHub webhook handlers (PR status, push events)
+- [x] `sandbox/executor.py` — dedicated command execution abstraction
+- [x] `sandbox/network_policy.py` — whitelist/blacklist rules for sandbox networking
+- [x] `api/routes/webhook.py` — GitHub webhook handlers (PR status, push events)
 - [ ] MCP tool integration — `search_codebase`, `read_file`, `run_command`, `screenshot` (PRD §5.3)
 
 ---
@@ -207,16 +207,16 @@ The React frontend is fully built (pages, components, auth, routing) but current
 
 | Phase | Status | Notes |
 |-------|--------|-------|
-| **Phase 1** — Backend foundation | **~95% complete** | All agents, orchestrator, API routes, DB schema, services done. Minor gaps: sandbox executor/network_policy modules, webhook route. Recent bug fixes resolved FK violations, ID consistency, and education card overwrites. |
-| **Phase 2** — Frontend integration | **Not started** | Frontend UI is 100% built but still wired to legacy Supabase Edge Functions. Needs to be re-pointed at the Python `/api/audit` + `/api/status` endpoints. |
+| **Phase 1** — Backend foundation | **~98% complete** | Agents, orchestrator, API routes, DB schema, and core services are in place. Sandbox executor/network policy and webhook route now exist; remaining work is deeper reliability hardening. |
+| **Phase 2** — Frontend integration | **~90% complete** | Core scan path and vision intake are wired to Python backend (`/api/audit`, `/api/status`, `/api/vision-intake`, limits/artifacts). Remaining work is mainly type cleanup and final UX polish. |
 | **Phase 3** — Auto-fix (paid) | **Stub only** | `POST /api/fix` returns a placeholder response. Full fix loop, payment, PR creation not implemented. |
-| **Phase 4** — Production hardening | **Not started** | No retry logic, monitoring, network policies, or performance tuning yet. |
+| **Phase 4** — Production hardening | **In progress** | Added webhook signature + replay checks and sandbox command/network policy enforcement scaffold. Retry logic/monitoring/perf work still pending. |
 
 ### Recommended next step
 
-**Phase 2 (Frontend Integration)** is the critical path — the backend pipeline is functional, but the frontend can't talk to it yet. Specifically:
+**Phase 3 (Auto-fix revenue loop) + Phase 4 hardening** are now the critical path.
 
-1. Rewrite `src/lib/api.ts` to call the Python backend
-2. Update `ScanLive.tsx` to use the new SSE event format
-3. Update `NewScan.tsx` to POST to `/api/audit`
-4. Clean up legacy Edge Function references
+1. Implement full `POST /api/fix` execution loop (sandbox edit/test/verify/PR)
+2. Add robust retry/recovery and model fallback behavior
+3. Complete observability and incident alerting baselines
+4. Tighten policy enforcement and security controls for production rollout

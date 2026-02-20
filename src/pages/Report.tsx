@@ -1,14 +1,13 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Shield, ArrowLeft, AlertTriangle, Lock, Bug, TrendingUp, CheckCircle2, Circle, Clock, RefreshCw, Lightbulb, Briefcase, ShieldCheck, ShieldAlert, ShieldX, Terminal, XCircle } from "lucide-react";
+import { Shield, ArrowLeft, AlertTriangle, Lock, Bug, TrendingUp, CheckCircle2, Circle, Clock, RefreshCw, Lightbulb, Briefcase, ShieldCheck, ShieldAlert, ShieldX, Terminal, XCircle, Download, Database, Timer, Coins } from "lucide-react";
 import { supabase } from "@/integrations/supabase/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { toast } from "@/hooks/use-toast";
-import { useAuth } from "@/contexts/AuthContext";
-import { getClerkToken } from "@/integrations/clerk/tokenStore";
+import { getReportArtifact } from "@/lib/api";
 
 interface ActionItem {
   id: string;
@@ -29,6 +28,48 @@ interface Summary {
   reliability_score: number;
   scalability_score: number;
 }
+
+interface RunDetails {
+  scan_id?: string;
+  repo_sha?: string;
+  run_started_at?: string;
+  index_source?: string;
+  cache_hit?: boolean;
+  file_count?: number;
+  loc_total?: number;
+  checks_evaluated?: number;
+  index_generated_at?: string;
+  index_ms?: number;
+  scan_ms?: number;
+  report_ms?: number;
+  total_ms?: number;
+  reports_generated_before?: number;
+  report_limit?: number;
+  cost_breakdown?: {
+    compute_usd?: number;
+    llm_usd?: number;
+    total_usd?: number;
+  };
+  model_usage?: {
+    prompt_tokens?: number;
+    completion_tokens?: number;
+    total_tokens?: number;
+  };
+}
+
+type EducationMap = Record<string, { why_it_matters: string; cto_perspective: string }>;
+
+const buildEducationMap = (items: ActionItem[]): EducationMap => {
+  const cards: EducationMap = {};
+  for (const item of items) {
+    if (!item.why_it_matters && !item.cto_perspective) continue;
+    cards[item.id] = {
+      why_it_matters: item.why_it_matters || "",
+      cto_perspective: item.cto_perspective || "",
+    };
+  }
+  return cards;
+};
 
 const severityConfig: Record<string, { color: string; label: string; emoji: string }> = {
   critical: { color: "bg-neon-red text-primary-foreground", label: "Critical", emoji: "🔴" },
@@ -84,23 +125,50 @@ function ScoreGauge({ score, label, size = "lg" }: { score: number; label: strin
   );
 }
 
+const asNumber = (value: unknown, fallback = 0): number => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return fallback;
+};
+
+const formatMs = (value: unknown): string => {
+  const ms = asNumber(value, 0);
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)}s`;
+  return `${ms}ms`;
+};
+
+const formatUsd = (value: unknown): string => {
+  const amount = asNumber(value, 0);
+  return `$${amount.toFixed(amount >= 1 ? 2 : 4)}`;
+};
+
 const Report = () => {
   const { id } = useParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
   const [actionItems, setActionItems] = useState<ActionItem[]>([]);
   const [summary, setSummary] = useState<Summary | null>(null);
+  const [runDetails, setRunDetails] = useState<RunDetails | null>(null);
   const [securityReview, setSecurityReview] = useState<any>(null);
   const [deepProbe, setDeepProbe] = useState<any>(null);
+  const [evolutionReport, setEvolutionReport] = useState<any>(null);
+  const [auditConfidence, setAuditConfidence] = useState<number | null>(null);
+  const [primerSummary, setPrimerSummary] = useState<string>("");
+  const [scanTier, setScanTier] = useState<string>("deep");
   const [loading, setLoading] = useState(true);
-  const [scanTier, setScanTier] = useState("");
   const [repoName, setRepoName] = useState("");
-  const [projectId, setProjectId] = useState("");
   const [repoUrl, setRepoUrl] = useState("");
   const [filter, setFilter] = useState<"all" | "open" | "in_progress" | "fixed">("all");
   const [educationCards, setEducationCards] = useState<Record<string, { why_it_matters: string; cto_perspective: string }>>({});
   const [educationLoading, setEducationLoading] = useState(false);
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
+  const [artifactContent, setArtifactContent] = useState<string>("");
+  const [artifactExpiresAt, setArtifactExpiresAt] = useState<string | null>(null);
+  const [artifactMissing, setArtifactMissing] = useState(false);
+  const [artifactLoading, setArtifactLoading] = useState(false);
+  const [agentLoading, setAgentLoading] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -115,11 +183,20 @@ const Report = () => {
 
       if (!report) { setLoading(false); return; }
 
-      setScanTier(report.scan_tier);
-      setProjectId(report.project_id);
       setSecurityReview((report as any).security_review || null);
+      setAuditConfidence((report as any).audit_confidence ?? null);
+      setPrimerSummary((report as any).primer_summary || "");
+      setEvolutionReport((report as any).evolution_report || null);
+      setScanTier((report as any).scan_tier || "deep");
       const reportData = (report as any).report_data as any;
       setDeepProbe(reportData?.deep_probe || null);
+      const tier1Data = reportData?.tier1 && typeof reportData.tier1 === "object" ? reportData.tier1 : null;
+      const rawRunDetails = tier1Data?.run_details || reportData?.run_details;
+      if (rawRunDetails && typeof rawRunDetails === "object") {
+        setRunDetails(rawRunDetails as RunDetails);
+      } else {
+        setRunDetails(null);
+      }
       const project = report.projects as unknown as { repo_name: string; repo_url: string } | null;
       setRepoName(project?.repo_name || project?.repo_url || "Unknown");
       setRepoUrl(project?.repo_url || "");
@@ -141,6 +218,20 @@ const Report = () => {
         .order("created_at", { ascending: true });
 
       if (items) setActionItems(items);
+      if (items) setEducationCards(buildEducationMap(items as ActionItem[]));
+
+      try {
+        const artifact = await getReportArtifact(id);
+        setArtifactContent(artifact.content || "");
+        setArtifactExpiresAt(artifact.expires_at || null);
+        setArtifactMissing(false);
+      } catch (err) {
+        const code = (err as { code?: string })?.code;
+        if (code === "report_artifact_missing") {
+          setArtifactMissing(true);
+        }
+      }
+
       setLoading(false);
     };
 
@@ -168,74 +259,131 @@ const Report = () => {
     if (actionItems.length === 0) return;
     setEducationLoading(true);
     try {
-      const findings = actionItems.slice(0, 10).map((item) => ({
-        id: item.id,
-        title: item.title,
-        description: item.description,
-        category: item.category,
-        severity: item.severity,
-        file_path: item.file_path,
-      }));
-
-      const token = await getClerkToken();
-      if (!token) throw new Error("Authentication token missing. Please sign in again.");
-
-      const resp = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/generate-education`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ findings }),
-      });
-
-      if (!resp.ok) throw new Error("Failed to generate education cards");
-      const data = await resp.json();
-      const content = data.choices?.[0]?.message?.content || "";
-
-      // Parse JSON objects from response
-      const cards: Record<string, { why_it_matters: string; cto_perspective: string }> = {};
-      for (const line of content.split("\n")) {
-        try {
-          const obj = JSON.parse(line.trim());
-          if (obj.finding_id) cards[obj.finding_id] = { why_it_matters: obj.why_it_matters, cto_perspective: obj.cto_perspective };
-        } catch {
-          // Try parsing entire content as JSON array
-        }
-      }
-
-      // If no line-by-line parsing worked, try as array
+      const cards = buildEducationMap(actionItems);
       if (Object.keys(cards).length === 0) {
-        try {
-          const arr = JSON.parse(content);
-          if (Array.isArray(arr)) {
-            arr.forEach((obj: { finding_id: string; why_it_matters: string; cto_perspective: string }) => {
-              if (obj.finding_id) cards[obj.finding_id] = { why_it_matters: obj.why_it_matters, cto_perspective: obj.cto_perspective };
-            });
-          }
-        } catch { /* ignore */ }
+        toast({
+          title: "No saved insights yet",
+          description: "Education cards are generated during scans. Run a fresh scan to populate them.",
+        });
+        return;
       }
-
       setEducationCards(cards);
-
-      // Persist to action_items
-      for (const [itemId, card] of Object.entries(cards)) {
-        await supabase
-          .from("action_items")
-          .update({ why_it_matters: card.why_it_matters, cto_perspective: card.cto_perspective })
-          .eq("id", itemId);
-      }
+      toast({
+        title: "Insights loaded",
+        description: `Loaded ${Object.keys(cards).length} saved education cards.`,
+      });
     } catch (err) {
-      toast({ title: "Error", description: "Failed to generate educational cards.", variant: "destructive" });
+      toast({ title: "Error", description: "Failed to load educational cards.", variant: "destructive" });
     }
     setEducationLoading(false);
   };
 
   const handleRescan = () => {
-    if (projectId && repoUrl) {
-      navigate("/scan/live", {
-        state: { projectId, repoUrl, tier: scanTier || "surface" },
+    if (repoUrl) {
+      navigate("/scan/new", {
+        state: { repoUrl },
       });
+    }
+  };
+
+  const _downloadBlob = (blob: Blob, filename: string) => {
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const _base64ToUint8Array = (base64: string): Uint8Array => {
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i += 1) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return bytes;
+  };
+
+  const handleDownloadMarkdown = async () => {
+    if (!id) return;
+    setArtifactLoading(true);
+
+    try {
+      const artifact = artifactContent
+        ? {
+            scan_id: id,
+            artifact_type: "markdown",
+            content: artifactContent,
+            expires_at: artifactExpiresAt || "",
+            mime_type: "text/markdown",
+            content_encoding: "utf-8",
+            filename: `clarity-check-report-${id}.md`,
+          }
+        : await getReportArtifact(id, "markdown");
+
+      if (!artifact?.content) {
+        throw new Error("Report artifact content is empty.");
+      }
+
+      setArtifactContent(artifact.content);
+      setArtifactExpiresAt(artifact.expires_at || null);
+
+      const mimeType = artifact.mime_type || "application/octet-stream";
+      const filename = artifact.filename || `clarity-check-markdown-${id}.md`;
+      if (artifact.content_encoding === "base64") {
+        const bytes = _base64ToUint8Array(artifact.content);
+        _downloadBlob(new Blob([bytes], { type: mimeType }), filename);
+      } else {
+        _downloadBlob(new Blob([artifact.content], { type: `${mimeType};charset=utf-8` }), filename);
+      }
+
+      setArtifactMissing(false);
+      toast({
+        title: "Markdown downloaded",
+        description: artifact.expires_at
+          ? `Artifact expires at ${new Date(artifact.expires_at).toLocaleString()}.`
+          : "Download complete.",
+      });
+    } catch (err) {
+      const code = (err as { code?: string })?.code;
+      if (code === "report_artifact_missing") {
+        setArtifactMissing(true);
+      }
+      toast({
+        title: "Download unavailable",
+        description: code === "report_artifact_missing"
+          ? "Requested artifact expired. Run a new scan to generate fresh outputs."
+          : (err instanceof Error ? err.message : "Failed to download artifact."),
+        variant: "destructive",
+      });
+    } finally {
+      setArtifactLoading(false);
+    }
+  };
+
+  const handleCopyAgentMarkdown = async () => {
+    if (!id) return;
+    setAgentLoading(true);
+    try {
+      const artifact = await getReportArtifact(id, "agent_markdown");
+      if (!artifact.content) {
+        throw new Error("Agent markdown artifact content is empty.");
+      }
+      await navigator.clipboard.writeText(artifact.content);
+      toast({
+        title: "Agent markdown copied",
+        description: "Paste it directly into your coding agent.",
+      });
+    } catch (err) {
+      toast({
+        title: "Copy failed",
+        description: err instanceof Error ? err.message : "Failed to copy agent markdown.",
+        variant: "destructive",
+      });
+    } finally {
+      setAgentLoading(false);
     }
   };
 
@@ -254,6 +402,18 @@ const Report = () => {
     in_progress: actionItems.filter((i) => i.fix_status === "in_progress").length,
     fixed: actionItems.filter((i) => i.fix_status === "fixed").length,
   };
+  const runCost = runDetails?.cost_breakdown || {};
+  const runUsage = runDetails?.model_usage || {};
+  const stageTimings = [
+    { key: "index", label: "Index", value: asNumber(runDetails?.index_ms, 0), color: "bg-neon-cyan" },
+    { key: "scan", label: "Scan", value: asNumber(runDetails?.scan_ms, 0), color: "bg-neon-orange" },
+    { key: "report", label: "Report", value: asNumber(runDetails?.report_ms, 0), color: "bg-neon-green" },
+  ];
+  const maxTimingMs = Math.max(
+    asNumber(runDetails?.total_ms, 0),
+    stageTimings.reduce((acc, stage) => acc + stage.value, 0),
+    1,
+  );
 
   if (loading) {
     return (
@@ -288,26 +448,54 @@ const Report = () => {
           <div>
             <h1 className="text-3xl font-bold mb-1">Production Health Report</h1>
             <p className="text-muted-foreground font-mono text-sm">{repoName}</p>
-            <Badge variant="outline" className="mt-2 text-xs">{scanTier === "deep" ? "🔬 Deep Probe" : "⚡ Surface Scan"}</Badge>
+            <Badge variant="outline" className="mt-2 text-xs">
+              {scanTier === "free" ? "🆓 Tier 1 deterministic" : "🔬 Deep Audit"}
+            </Badge>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleDownloadMarkdown}
+              disabled={artifactLoading}
+            >
+              <Download className="w-4 h-4 mr-1" />
+              {artifactLoading ? "Downloading..." : "Download markdown"}
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleCopyAgentMarkdown}
+              disabled={agentLoading}
+            >
+              <Terminal className="w-4 h-4 mr-1" />
+              {agentLoading ? "Copying..." : "Copy agent markdown"}
+            </Button>
             {actionItems.length > 0 && (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={fetchEducation}
-                disabled={educationLoading}
-                className="border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/10"
-              >
-                <Lightbulb className="w-4 h-4 mr-1" />
-                {educationLoading ? "Generating..." : "Why This Matters"}
-              </Button>
-            )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={fetchEducation}
+                  disabled={educationLoading}
+                  className="border-neon-cyan/30 text-neon-cyan hover:bg-neon-cyan/10"
+                >
+                  <Lightbulb className="w-4 h-4 mr-1" />
+                  {educationLoading ? "Loading..." : "Load Insights"}
+                </Button>
+              )}
             <Button variant="outline" size="sm" onClick={handleRescan}>
               <RefreshCw className="w-4 h-4 mr-1" /> Rescan
             </Button>
           </div>
         </div>
+
+        {artifactMissing && (
+          <Card className="mb-6 border-amber-400/40 bg-amber-950/15">
+            <CardContent className="pt-4 pb-4 text-sm text-amber-200">
+              This report artifact has expired (free-tier TTL is 7 days). Run a new scan to generate a fresh downloadable report.
+            </CardContent>
+          </Card>
+        )}
 
         {/* Score Dashboard */}
         {summary && (
@@ -322,6 +510,101 @@ const Report = () => {
                   <ScoreGauge score={summary.scalability_score} label="Scalability" size="sm" />
                 </div>
               </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {runDetails && (
+          <Card className="glass-strong mb-8 border-neon-cyan/20">
+            <CardContent className="pt-6 pb-6">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                <div>
+                  <h2 className="text-lg font-bold">Run Details</h2>
+                  <p className="text-xs text-muted-foreground">Indexing, execution timing, and cost telemetry</p>
+                </div>
+                <Badge variant="outline" className="w-fit">
+                  {runDetails.index_source === "cache" ? "Index cache hit" : "Fresh index"}
+                </Badge>
+              </div>
+
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="rounded-lg border border-border/60 bg-secondary/30 p-3">
+                  <p className="text-[11px] text-muted-foreground flex items-center gap-1"><Database className="w-3.5 h-3.5" /> Files scanned</p>
+                  <p className="text-lg font-semibold">{asNumber(runDetails.file_count, 0).toLocaleString()}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-secondary/30 p-3">
+                  <p className="text-[11px] text-muted-foreground flex items-center gap-1"><TrendingUp className="w-3.5 h-3.5" /> LOC indexed</p>
+                  <p className="text-lg font-semibold">{asNumber(runDetails.loc_total, 0).toLocaleString()}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-secondary/30 p-3">
+                  <p className="text-[11px] text-muted-foreground flex items-center gap-1"><Timer className="w-3.5 h-3.5" /> Total runtime</p>
+                  <p className="text-lg font-semibold">{formatMs(runDetails.total_ms)}</p>
+                </div>
+                <div className="rounded-lg border border-border/60 bg-secondary/30 p-3">
+                  <p className="text-[11px] text-muted-foreground flex items-center gap-1"><Coins className="w-3.5 h-3.5" /> Estimated cost</p>
+                  <p className="text-lg font-semibold">{formatUsd(runCost.total_usd)}</p>
+                </div>
+              </div>
+
+              <div className="mt-5 space-y-2">
+                {stageTimings.map((stage) => (
+                  <div key={stage.key}>
+                    <div className="flex items-center justify-between text-xs mb-1">
+                      <span className="text-muted-foreground">{stage.label}</span>
+                      <span className="font-mono">{formatMs(stage.value)}</span>
+                    </div>
+                    <div className="h-2 rounded-full bg-secondary/60 overflow-hidden">
+                      <div
+                        className={`h-full ${stage.color}`}
+                        style={{ width: `${Math.min(100, (stage.value / maxTimingMs) * 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+                <span>Checks evaluated: <span className="text-foreground font-mono">{asNumber(runDetails.checks_evaluated, 0)}</span></span>
+                <span>Token usage: <span className="text-foreground font-mono">{asNumber(runUsage.total_tokens, 0).toLocaleString()}</span></span>
+                <span>Compute: <span className="text-foreground font-mono">{formatUsd(runCost.compute_usd)}</span></span>
+                <span>LLM: <span className="text-foreground font-mono">{formatUsd(runCost.llm_usd)}</span></span>
+                {runDetails.repo_sha && <span>SHA: <span className="text-foreground font-mono">{runDetails.repo_sha.slice(0, 12)}</span></span>}
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {(auditConfidence !== null || primerSummary || evolutionReport) && (
+          <Card className="glass mb-8">
+            <CardContent className="pt-6 pb-6 space-y-4">
+              {auditConfidence !== null && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Audit confidence</p>
+                  <p className="text-sm font-medium">{auditConfidence}/100</p>
+                </div>
+              )}
+              {primerSummary && (
+                <div>
+                  <p className="text-xs text-muted-foreground">Primer summary</p>
+                  <p className="text-sm">{primerSummary}</p>
+                </div>
+              )}
+              {evolutionReport && (
+                <div>
+                  <p className="text-xs text-muted-foreground mb-2">Behavioral analysis (Agent_Evolution)</p>
+                  <div className="flex flex-wrap gap-2 text-xs">
+                    <Badge variant="outline">
+                      Hotspots: {(evolutionReport.hotspots || []).length}
+                    </Badge>
+                    <Badge variant="outline">
+                      Couplings: {(evolutionReport.change_coupling || []).length}
+                    </Badge>
+                    <Badge variant="outline">
+                      Ownership risks: {(evolutionReport.ownership_risk || []).length}
+                    </Badge>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
         )}

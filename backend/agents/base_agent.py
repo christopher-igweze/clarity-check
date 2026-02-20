@@ -16,12 +16,14 @@ import logging
 from abc import ABC, abstractmethod
 from typing import Any, Callable
 from uuid import UUID
+from string import Template
 
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, Conversation, Tool, Event
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.sdk.conversation.response_utils import get_agent_final_response
 
 from config import settings
 from models.agent_log import AgentLogEntry, AgentName, LogLevel, SSEEventType
@@ -43,7 +45,7 @@ class BaseVibe2ProdAgent(ABC):
         scan_id: UUID,
         context: ContextStore,
         emit: Callable[[AgentLogEntry], Any],
-        workspace_dir: str = "/home/daytona/repo",
+        workspace_dir: str,
     ) -> None:
         self.scan_id = scan_id
         self.context = context
@@ -63,6 +65,7 @@ class BaseVibe2ProdAgent(ABC):
             model=f"openrouter/{model}",
             api_key=SecretStr(settings.openrouter_api_key),
             base_url=settings.openrouter_base_url,
+            max_output_tokens=settings.llm_max_output_tokens,
         )
 
     def _build_tools(self) -> list[Tool]:
@@ -103,11 +106,20 @@ class BaseVibe2ProdAgent(ABC):
         agent = Agent(
             llm=llm,
             tools=self._build_tools(),
-            system_prompt_filename=None,
         )
 
         # Prepend our system prompt to the user message
-        full_prompt = f"{self.system_prompt}\n\n---\n\n{prompt}"
+        system_prompt = Template(self.system_prompt).safe_substitute(
+            WORKSPACE_DIR=self.workspace_dir
+        )
+        prompt = Template(prompt).safe_substitute(WORKSPACE_DIR=self.workspace_dir)
+        full_prompt = (
+            f"{system_prompt}\n\n---\n\n{prompt}\n\n"
+            "IMPORTANT:\n"
+            "- You may ONLY use these tools: terminal, file_editor, think, finish.\n"
+            "- When you are done, call the finish tool with your final output in the message field.\n"
+            "- The finish message must be non-empty and MUST be valid JSON (no markdown fences).\n"
+        )
 
         conversation = Conversation(
             agent=agent,
@@ -144,14 +156,10 @@ class BaseVibe2ProdAgent(ABC):
     def _extract_output(conversation: Conversation) -> str:
         """Pull the final text output from the conversation."""
         try:
-            state = conversation.state
-            if state and state.history:
-                for event in reversed(state.history):
-                    text = getattr(event, "content", None) or getattr(
-                        event, "text", None
-                    )
-                    if text:
-                        return str(text)
+            events = getattr(conversation.state, "events", None)
+            if events is None:
+                return ""
+            return (get_agent_final_response(events) or "").strip()
         except Exception:
             pass
         return ""

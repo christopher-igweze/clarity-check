@@ -74,3 +74,24 @@ async def create_pull_request(
         )
         resp.raise_for_status()
         return resp.json()["html_url"]
+
+
+async def get_head_sha(
+    owner: str,
+    repo: str,
+    branch: str,
+    token: str | None = None,
+) -> str:
+    """Resolve the latest commit SHA for a branch."""
+    headers: dict[str, str] = {"Accept": "application/vnd.github.v3+json"}
+    if token:
+        headers["Authorization"] = f"token {token}"
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/commits/{branch}",
+            headers=headers,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    return data["sha"]

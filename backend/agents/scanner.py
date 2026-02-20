@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = """\
 You are Agent_Scanner, a Senior Software Auditor.  You have full terminal
-access to a cloned repository at /home/daytona/repo.
+access to a cloned repository at $WORKSPACE_DIR.
 
 Your mission:
 1. Run `find . -type f -not -path './.git/*' -not -path './node_modules/*' | sort`
@@ -69,15 +69,21 @@ class ScannerAgent(BaseVibe2ProdAgent):
         # Build the prompt with any available context
         charter = self.context.get("charter")
         vibe_prompt = self.context.get("vibe_prompt", "")
+        project_intake = self.context.get("project_intake")
+        primer = self.context.get("primer")
 
         extra = ""
         if charter:
             extra += f"\n\nProject Charter:\n{json.dumps(charter, indent=2)}"
         if vibe_prompt:
             extra += f"\n\nOriginal Vibe Prompt:\n{vibe_prompt}"
+        if project_intake:
+            extra += f"\n\nProject Intake:\n{json.dumps(project_intake, indent=2)}"
+        if primer:
+            extra += f"\n\nPrimer Context:\n{json.dumps(primer, indent=2)}"
 
         prompt = (
-            "Audit the repository at /home/daytona/repo. "
+            "Audit the repository at $WORKSPACE_DIR. "
             "Follow your instructions precisely."
             f"{extra}"
         )

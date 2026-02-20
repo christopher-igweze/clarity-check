@@ -145,36 +145,110 @@ export type Database = {
       }
       profiles: {
         Row: {
+          acquisition_other: string | null
+          acquisition_source: string | null
           avatar_url: string | null
+          coding_agent_model: string
+          coding_agent_provider: string
           created_at: string
           display_name: string | null
+          explanation_style: string | null
           github_access_token: string | null
           github_username: string | null
           id: string
+          onboarding_complete: boolean
+          shipping_posture: string
+          technical_level: string | null
+          tool_tags: Json
           updated_at: string
           user_id: string
         }
         Insert: {
+          acquisition_other?: string | null
+          acquisition_source?: string | null
           avatar_url?: string | null
+          coding_agent_model?: string
+          coding_agent_provider?: string
           created_at?: string
           display_name?: string | null
+          explanation_style?: string | null
           github_access_token?: string | null
           github_username?: string | null
           id?: string
+          onboarding_complete?: boolean
+          shipping_posture?: string
+          technical_level?: string | null
+          tool_tags?: Json
           updated_at?: string
           user_id: string
         }
         Update: {
+          acquisition_other?: string | null
+          acquisition_source?: string | null
           avatar_url?: string | null
+          coding_agent_model?: string
+          coding_agent_provider?: string
           created_at?: string
           display_name?: string | null
+          explanation_style?: string | null
           github_access_token?: string | null
           github_username?: string | null
           id?: string
+          onboarding_complete?: boolean
+          shipping_posture?: string
+          technical_level?: string | null
+          tool_tags?: Json
           updated_at?: string
           user_id?: string
         }
         Relationships: []
+      }
+      project_primers: {
+        Row: {
+          confidence: number
+          created_at: string
+          failure_reason: string | null
+          id: string
+          primer_json: Json
+          project_id: string
+          repo_sha: string
+          summary: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          confidence?: number
+          created_at?: string
+          failure_reason?: string | null
+          id?: string
+          primer_json?: Json
+          project_id: string
+          repo_sha: string
+          summary?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          confidence?: number
+          created_at?: string
+          failure_reason?: string | null
+          id?: string
+          primer_json?: Json
+          project_id?: string
+          repo_sha?: string
+          summary?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "project_primers_project_id_fkey"
+            columns: ["project_id"]
+            isOneToOne: false
+            referencedRelation: "projects"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       projects: {
         Row: {
@@ -221,11 +295,15 @@ export type Database = {
       scan_reports: {
         Row: {
           agent_logs: Json | null
+          audit_confidence: number | null
           completed_at: string | null
           created_at: string
+          evolution_report: Json | null
           health_score: number | null
           id: string
+          primer_summary: string | null
           project_id: string
+          project_intake: Json | null
           reliability_score: number | null
           report_data: Json | null
           scalability_score: number | null
@@ -238,15 +316,19 @@ export type Database = {
         }
         Insert: {
           agent_logs?: Json | null
+          audit_confidence?: number | null
           completed_at?: string | null
           created_at?: string
+          evolution_report?: Json | null
           health_score?: number | null
           id?: string
+          primer_summary?: string | null
           project_id: string
+          project_intake?: Json | null
           reliability_score?: number | null
           report_data?: Json | null
           scalability_score?: number | null
-          scan_tier: string
+          scan_tier?: string
           security_review?: Json | null
           security_score?: number | null
           started_at?: string | null
@@ -255,11 +337,15 @@ export type Database = {
         }
         Update: {
           agent_logs?: Json | null
+          audit_confidence?: number | null
           completed_at?: string | null
           created_at?: string
+          evolution_report?: Json | null
           health_score?: number | null
           id?: string
+          primer_summary?: string | null
           project_id?: string
+          project_intake?: Json | null
           reliability_score?: number | null
           report_data?: Json | null
           scalability_score?: number | null
@@ -336,7 +422,7 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      requesting_user_id: { Args: never; Returns: string }
     }
     Enums: {
       [_ in never]: never

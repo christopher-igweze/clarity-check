@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel, Field
 
+from models.evolution import EvolutionReport
 
 class Severity(str, Enum):
     critical = "critical"
@@ -92,8 +93,11 @@ class AuditReport(BaseModel):
     security_score: int = Field(ge=0, le=100)
     reliability_score: int = Field(ge=0, le=100)
     scalability_score: int = Field(ge=0, le=100)
+    audit_confidence: int = Field(default=0, ge=0, le=100)
+    primer_summary: str | None = None
     findings: list[Finding] = Field(default_factory=list)
     probe_results: list[ProbeResult] = Field(default_factory=list)
     security_verdicts: list[SecurityVerdict] = Field(default_factory=list)
     action_items: list[ActionItem] = Field(default_factory=list)
     education_cards: list[EducationCard] = Field(default_factory=list)
+    evolution: EvolutionReport = Field(default_factory=EvolutionReport)

@@ -26,3 +26,10 @@ supabase/.temp/
 *.njsproj
 *.sln
 *.sw?
+
+# Python
+__pycache__/
+*.pyc
+
+# Generated run artifacts
+doc/runs/

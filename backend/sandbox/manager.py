@@ -8,7 +8,7 @@ Sandboxes auto-delete after ``sandbox_timeout_minutes`` of inactivity.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from uuid import UUID
 
 from daytona import (
@@ -21,19 +21,9 @@ from daytona import (
 )
 
 from config import settings
+from sandbox.executor import CommandResult, SandboxExecutor
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class CommandResult:
-    """Normalised result of a command execution inside a sandbox."""
-
-    command: str
-    exit_code: int
-    stdout: str
-    stderr: str
-    duration_ms: int = 0
 
 
 @dataclass
@@ -49,13 +39,20 @@ class SandboxManager:
     """Creates, manages, and tears down Daytona sandboxes."""
 
     def __init__(self) -> None:
+        # NOTE: If target is None, Daytona will pick the org default.
+        # Passing an unsupported target yields errors like:
+        # "Region us is not available to the organization".
+        target = settings.daytona_target or None
+        if isinstance(target, str) and not target.strip():
+            target = None
         config = DaytonaConfig(
             api_key=settings.daytona_api_key,
             api_url=settings.daytona_api_url,
-            target=settings.daytona_target,
+            target=target,
         )
         self._daytona = Daytona(config)
         self._sessions: dict[UUID, SandboxSession] = {}
+        self._executor = SandboxExecutor()
 
     async def provision(self, scan_id: UUID, clone_url: str) -> SandboxSession:
         """Spin up a sandbox, clone the repo, and return a session handle."""
@@ -101,13 +98,11 @@ class SandboxManager:
             raise RuntimeError(f"No sandbox session for scan {scan_id}")
 
         work_dir = cwd or session.repo_path
-        resp = session.sandbox.process.exec(command, cwd=work_dir, timeout=timeout)
-
-        return CommandResult(
+        return await self._executor.execute(
+            sandbox=session.sandbox,
             command=command,
-            exit_code=resp.exit_code,
-            stdout=resp.result or "",
-            stderr="",
+            cwd=work_dir,
+            timeout=timeout,
         )
 
     async def read_file(self, scan_id: UUID, path: str) -> str:
@@ -115,8 +110,15 @@ class SandboxManager:
         session = self._sessions.get(scan_id)
         if session is None:
             raise RuntimeError(f"No sandbox session for scan {scan_id}")
-        content = session.sandbox.fs.download_file(path)
-        return content.decode("utf-8", errors="replace")
+        try:
+            content = session.sandbox.fs.download_file(path)
+            return content.decode("utf-8", errors="replace")
+        except Exception as exc:
+            logger.warning("download_file failed for %s: %s; falling back to cat", path, exc)
+            result = await self.exec(scan_id, f"cat {path}", cwd="/home/daytona", timeout=120)
+            if result.exit_code != 0:
+                raise RuntimeError(f"Failed to read file via fallback cat: {path}")
+            return result.stdout
 
     async def upload_file(self, scan_id: UUID, path: str, content: bytes) -> None:
         """Upload a file into the sandbox."""
