@@ -24,3 +24,19 @@ def emit_runtime_metric(
     }
     logger.info("runtime_metric %s", payload)
 
+
+def emit_orchestration_event(
+    *,
+    event: str,
+    build_id: str,
+    node_id: str | None = None,
+    data: dict[str, Any] | None = None,
+) -> None:
+    """Emit a structured orchestration lifecycle event."""
+    payload: dict[str, Any] = {
+        "event": event,
+        "build_id": build_id,
+        "node_id": node_id,
+        "data": data or {},
+    }
+    logger.info("orchestration_event %s", payload)

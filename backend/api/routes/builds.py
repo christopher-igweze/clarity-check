@@ -15,8 +15,13 @@ from models.builds import (
     BuildCheckpoint,
     BuildCheckpointRequest,
     BuildCreateRequest,
+    BuildGateDecisionRequest,
     BuildRun,
     BuildRunSummary,
+    GateDecision,
+    GateType,
+    TaskRun,
+    TaskStatus,
     BuildStatus,
 )
 from orchestration.prompt_contracts import list_prompt_contracts
@@ -62,6 +67,88 @@ async def get_build(build_id: UUID) -> BuildRun:
             detail={"code": "build_not_found", "message": "Build not found."},
         )
     return build
+
+
+@router.get("/v1/builds/{build_id}/tasks", response_model=list[TaskRun])
+async def list_task_runs(
+    build_id: UUID,
+    node_id: str | None = None,
+    status: TaskStatus | None = None,
+    limit: int = 200,
+) -> list[TaskRun]:
+    try:
+        return await build_store.list_task_runs(
+            build_id,
+            node_id=node_id,
+            status=status,
+            limit=limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+
+
+@router.get("/v1/builds/{build_id}/tasks/{task_run_id}", response_model=TaskRun)
+async def get_task_run(build_id: UUID, task_run_id: UUID) -> TaskRun:
+    try:
+        task_run = await build_store.get_task_run(build_id, task_run_id)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+    if task_run is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "task_run_not_found", "message": "Task run not found."},
+        )
+    return task_run
+
+
+@router.get("/v1/builds/{build_id}/gates", response_model=list[GateDecision])
+async def list_gate_decisions(
+    build_id: UUID,
+    gate: GateType | None = None,
+    limit: int = 200,
+) -> list[GateDecision]:
+    try:
+        return await build_store.list_gate_decisions(
+            build_id,
+            gate=gate,
+            limit=limit,
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+
+
+@router.post("/v1/builds/{build_id}/gates/{gate}", response_model=GateDecision)
+@limiter.limit(rate_limit_string())
+async def record_gate_decision(
+    build_id: UUID,
+    gate: GateType,
+    request_body: BuildGateDecisionRequest,
+    request: Request,
+) -> GateDecision:
+    _ = request.state.user_id
+    try:
+        return await build_store.record_gate_decision(
+            build_id,
+            gate=gate,
+            status=request_body.status,
+            reason=request_body.reason,
+            node_id=request_body.node_id,
+            source="manual",
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
 
 
 @router.post("/v1/builds/{build_id}/resume", response_model=BuildRun)
