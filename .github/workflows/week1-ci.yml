@@ -6,7 +6,7 @@ on:
     branches:
       - main
       - staging
-      - "codex/week-1/**"
+      - "codex/week-*/**"
 
 jobs:
   backend-tests:
@@ -22,10 +22,9 @@ jobs:
       - name: Install backend deps
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest
+          pip install -r requirements-test.txt
       - name: Run backend tests
-        run: pytest -q
+        run: PYTHONPATH=. pytest -q
 
   frontend-build:
     runs-on: ubuntu-latest
@@ -39,4 +38,3 @@ jobs:
         run: npm ci
       - name: Build frontend
         run: npm run build
-
