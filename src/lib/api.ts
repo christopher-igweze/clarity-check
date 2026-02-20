@@ -181,6 +181,69 @@ export async function runPrimer({
   return await resp.json();
 }
 
+export async function getGithubAuthUrl({
+  redirectUri,
+}: {
+  redirectUri: string;
+}): Promise<{ auth_url: string }> {
+  const resp = await fetch(`${API_URL}/github-oauth`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      action: "get_auth_url",
+      redirect_uri: redirectUri,
+    }),
+  });
+
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to get GitHub auth URL");
+  }
+  return await resp.json();
+}
+
+export async function exchangeGithubCode({
+  code,
+  redirectUri,
+  state,
+}: {
+  code: string;
+  redirectUri: string;
+  state: string;
+}): Promise<{
+  github_username?: string;
+  avatar_url?: string | null;
+  connected: boolean;
+}> {
+  const resp = await fetch(`${API_URL}/github-oauth`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      action: "exchange_code",
+      code,
+      redirect_uri: redirectUri,
+      state,
+    }),
+  });
+
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to connect GitHub");
+  }
+  return await resp.json();
+}
+
+export async function disconnectGithub(): Promise<{ connected: boolean }> {
+  const resp = await fetch(`${API_URL}/github-oauth`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({ action: "disconnect" }),
+  });
+
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to disconnect GitHub");
+  }
+  return await resp.json();
+}
+
 export type ScanStatusEvent = {
   event: string;
   payload: {

@@ -16,6 +16,7 @@ from config import settings
 
 # Paths that don't require authentication
 PUBLIC_PATHS = {"/", "/health", "/docs", "/openapi.json", "/redoc"}
+PUBLIC_PREFIXES = ("/api/webhook/",)
 
 
 class SupabaseAuthMiddleware(BaseHTTPMiddleware):
@@ -23,7 +24,11 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         # Skip auth for public endpoints and CORS preflight
-        if request.url.path in PUBLIC_PATHS or request.method == "OPTIONS":
+        if (
+            request.url.path in PUBLIC_PATHS
+            or any(request.url.path.startswith(prefix) for prefix in PUBLIC_PREFIXES)
+            or request.method == "OPTIONS"
+        ):
             return await call_next(request)
 
         auth_header = request.headers.get("Authorization", "")
