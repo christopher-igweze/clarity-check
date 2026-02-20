@@ -18,8 +18,14 @@ from models.builds import (
     BuildGateDecisionRequest,
     BuildRun,
     BuildRunSummary,
+    DebtItem,
+    DebtItemRequest,
     GateDecision,
     GateType,
+    PolicyViolation,
+    PolicyViolationRequest,
+    ReplanDecision,
+    ReplanDecisionRequest,
     TaskRun,
     TaskRunCompleteRequest,
     TaskRunStartRequest,
@@ -218,6 +224,122 @@ async def record_gate_decision(
             reason=request_body.reason,
             node_id=request_body.node_id,
             source="manual",
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+
+
+@router.get("/v1/builds/{build_id}/replan", response_model=list[ReplanDecision])
+async def list_replan_decisions(
+    build_id: UUID,
+    limit: int = 200,
+) -> list[ReplanDecision]:
+    try:
+        return await build_store.list_replan_decisions(build_id, limit=limit)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+
+
+@router.post("/v1/builds/{build_id}/replan", response_model=ReplanDecision)
+@limiter.limit(rate_limit_string())
+async def record_replan_decision(
+    build_id: UUID,
+    request_body: ReplanDecisionRequest,
+    request: Request,
+) -> ReplanDecision:
+    _ = request.state.user_id
+    try:
+        return await build_store.record_replan_decision(
+            build_id,
+            action=request_body.action,
+            reason=request_body.reason,
+            replacement_nodes=request_body.replacement_nodes,
+            source="manual",
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_replan", "message": str(exc)},
+        ) from exc
+
+
+@router.get("/v1/builds/{build_id}/debt", response_model=list[DebtItem])
+async def list_debt_items(
+    build_id: UUID,
+    limit: int = 200,
+) -> list[DebtItem]:
+    try:
+        return await build_store.list_debt_items(build_id, limit=limit)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+
+
+@router.post("/v1/builds/{build_id}/debt", response_model=DebtItem)
+@limiter.limit(rate_limit_string())
+async def record_debt_item(
+    build_id: UUID,
+    request_body: DebtItemRequest,
+    request: Request,
+) -> DebtItem:
+    _ = request.state.user_id
+    try:
+        return await build_store.record_debt_item(
+            build_id,
+            node_id=request_body.node_id,
+            summary=request_body.summary,
+            severity=request_body.severity,
+            source="manual",
+        )
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+
+
+@router.get("/v1/builds/{build_id}/policy-violations", response_model=list[PolicyViolation])
+async def list_policy_violations(
+    build_id: UUID,
+    limit: int = 200,
+) -> list[PolicyViolation]:
+    try:
+        return await build_store.list_policy_violations(build_id, limit=limit)
+    except KeyError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        ) from exc
+
+
+@router.post("/v1/builds/{build_id}/policy-violations", response_model=PolicyViolation)
+@limiter.limit(rate_limit_string())
+async def record_policy_violation(
+    build_id: UUID,
+    request_body: PolicyViolationRequest,
+    request: Request,
+) -> PolicyViolation:
+    _ = request.state.user_id
+    try:
+        return await build_store.record_policy_violation(
+            build_id,
+            code=request_body.code,
+            message=request_body.message,
+            source=request_body.source,
+            blocking=request_body.blocking,
         )
     except KeyError as exc:
         raise HTTPException(

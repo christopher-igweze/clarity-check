@@ -15,10 +15,14 @@ from models.builds import (
     BuildRunSummary,
     BuildStatus,
     BuildStatusTransition,
+    DebtItem,
     DagNode,
     GateDecision,
     GateDecisionStatus,
     GateType,
+    PolicyViolation,
+    ReplanAction,
+    ReplanDecision,
     TaskRun,
     TaskStatus,
     utc_now,
@@ -570,6 +574,212 @@ class BuildStore:
             rows.sort(key=lambda row: row.created_at, reverse=True)
             return rows[: max(1, min(limit, 500))]
 
+    async def record_replan_decision(
+        self,
+        build_id: UUID,
+        *,
+        action: ReplanAction,
+        reason: str,
+        replacement_nodes: list[DagNode] | None = None,
+        source: str = "manual",
+    ) -> ReplanDecision:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+
+            replacement = list(replacement_nodes or [])
+            if action == ReplanAction.modify_dag and replacement:
+                existing_ids = {node.node_id for node in build.dag}
+                duplicate_ids = [node.node_id for node in replacement if node.node_id in existing_ids]
+                if duplicate_ids:
+                    raise ValueError(f"duplicate_replan_node_id:{duplicate_ids[0]}")
+
+            decision = ReplanDecision(
+                decision_id=uuid4(),
+                action=action,
+                reason=reason,
+                replacement_nodes=replacement,
+            )
+            build.replan_history.append(decision)
+            build.updated_at = decision.created_at
+
+            if action == ReplanAction.modify_dag and replacement:
+                build.dag.extend(replacement)
+                self._refresh_dag_levels_unlocked(build)
+
+            if action == ReplanAction.abort and BuildStatus.aborted in _VALID_STATUS_TRANSITIONS.get(
+                build.status,
+                set(),
+            ):
+                self._transition_build_status_unlocked(
+                    build=build,
+                    to_status=BuildStatus.aborted,
+                    reason=f"replan_abort:{reason}",
+                    source="replanner",
+                )
+                self._append_event_unlocked(
+                    BuildEvent(
+                        event_type="BUILD_FINISHED",
+                        build_id=build_id,
+                        payload={"final_status": BuildStatus.aborted.value},
+                    )
+                )
+
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type="REPLAN_DECISION",
+                    build_id=build_id,
+                    payload={
+                        "decision_id": str(decision.decision_id),
+                        "action": action.value,
+                        "reason": reason,
+                        "replacement_node_ids": [node.node_id for node in replacement],
+                        "source": source,
+                    },
+                )
+            )
+            emit_orchestration_event(
+                event="replan_decision",
+                build_id=str(build_id),
+                data={
+                    "decision_id": str(decision.decision_id),
+                    "action": action.value,
+                    "reason": reason,
+                    "source": source,
+                },
+            )
+            return decision
+
+    async def list_replan_decisions(
+        self,
+        build_id: UUID,
+        *,
+        limit: int = 200,
+    ) -> list[ReplanDecision]:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            rows = list(build.replan_history)
+            rows.sort(key=lambda row: row.created_at, reverse=True)
+            return rows[: max(1, min(limit, 500))]
+
+    async def record_debt_item(
+        self,
+        build_id: UUID,
+        *,
+        node_id: str,
+        summary: str,
+        severity: str = "medium",
+        source: str = "manual",
+    ) -> DebtItem:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            item = DebtItem(
+                debt_id=uuid4(),
+                node_id=node_id,
+                summary=summary,
+                severity=severity,
+            )
+            build.debt_items.append(item)
+            build.updated_at = item.created_at
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type="DEBT_ITEM_RECORDED",
+                    build_id=build_id,
+                    payload={
+                        "debt_id": str(item.debt_id),
+                        "node_id": node_id,
+                        "severity": severity,
+                        "summary": summary,
+                        "source": source,
+                    },
+                )
+            )
+            return item
+
+    async def list_debt_items(
+        self,
+        build_id: UUID,
+        *,
+        limit: int = 200,
+    ) -> list[DebtItem]:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            rows = list(build.debt_items)
+            rows.sort(key=lambda row: row.created_at, reverse=True)
+            return rows[: max(1, min(limit, 500))]
+
+    async def record_policy_violation(
+        self,
+        build_id: UUID,
+        *,
+        code: str,
+        message: str,
+        source: str,
+        blocking: bool = True,
+    ) -> PolicyViolation:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            violation = PolicyViolation(
+                violation_id=uuid4(),
+                code=code,
+                message=message,
+                source=source,
+                blocking=blocking,
+            )
+            build.policy_violations.append(violation)
+            build.updated_at = violation.created_at
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type="POLICY_VIOLATION",
+                    build_id=build_id,
+                    payload={
+                        "violation_id": str(violation.violation_id),
+                        "code": code,
+                        "message": message,
+                        "source": source,
+                        "blocking": blocking,
+                    },
+                )
+            )
+            if blocking and BuildStatus.failed in _VALID_STATUS_TRANSITIONS.get(build.status, set()):
+                self._transition_build_status_unlocked(
+                    build=build,
+                    to_status=BuildStatus.failed,
+                    reason=f"policy_violation:{code}",
+                    source="policy",
+                )
+                self._append_event_unlocked(
+                    BuildEvent(
+                        event_type="BUILD_FINISHED",
+                        build_id=build_id,
+                        payload={"final_status": BuildStatus.failed.value},
+                    )
+                )
+            return violation
+
+    async def list_policy_violations(
+        self,
+        build_id: UUID,
+        *,
+        limit: int = 200,
+    ) -> list[PolicyViolation]:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            rows = list(build.policy_violations)
+            rows.sort(key=lambda row: row.created_at, reverse=True)
+            return rows[: max(1, min(limit, 500))]
+
     async def create_checkpoint(
         self,
         build_id: UUID,
@@ -620,6 +830,15 @@ class BuildStore:
 
     def _append_event_unlocked(self, event: BuildEvent) -> None:
         self._events[event.build_id].append(event)
+
+    def _refresh_dag_levels_unlocked(self, build: BuildRun) -> None:
+        levels = compute_dag_levels(build.dag)
+        build.metadata["dag_levels"] = levels
+        cursor = int(build.metadata.get("level_cursor", 0))
+        if levels:
+            build.metadata["level_cursor"] = max(0, min(cursor, len(levels) - 1))
+        else:
+            build.metadata["level_cursor"] = 0
 
     def _append_checkpoint_unlocked(
         self,

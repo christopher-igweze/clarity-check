@@ -252,6 +252,97 @@ class BuildRouteTests(unittest.TestCase):
         self.assertEqual(resp.status_code, 422)
         self.assertEqual(resp.json()["detail"]["code"], "invalid_dag")
 
+    def test_replan_modify_dag_records_decision_and_extends_graph(self) -> None:
+        create_resp = self.client.post("/v1/builds", json=self._create_payload())
+        self.assertEqual(create_resp.status_code, 200)
+        build = create_resp.json()
+        build_id = build["build_id"]
+        terminal_node = build["dag"][-1]["node_id"]
+
+        replan_resp = self.client.post(
+            f"/v1/builds/{build_id}/replan",
+            json={
+                "action": "MODIFY_DAG",
+                "reason": "split planner into verifier stage",
+                "replacement_nodes": [
+                    {
+                        "node_id": "verifier",
+                        "title": "Verifier",
+                        "agent": "verifier",
+                        "depends_on": [terminal_node],
+                    }
+                ],
+            },
+        )
+        self.assertEqual(replan_resp.status_code, 200)
+        decision = replan_resp.json()
+        self.assertEqual(decision["action"], "MODIFY_DAG")
+        self.assertEqual(decision["replacement_nodes"][0]["node_id"], "verifier")
+
+        get_resp = self.client.get(f"/v1/builds/{build_id}")
+        self.assertEqual(get_resp.status_code, 200)
+        dag_nodes = [node["node_id"] for node in get_resp.json()["dag"]]
+        self.assertIn("verifier", dag_nodes)
+
+        list_resp = self.client.get(f"/v1/builds/{build_id}/replan")
+        self.assertEqual(list_resp.status_code, 200)
+        self.assertGreaterEqual(len(list_resp.json()), 1)
+
+    def test_replan_abort_action_aborts_build(self) -> None:
+        create_resp = self.client.post("/v1/builds", json=self._create_payload())
+        build_id = create_resp.json()["build_id"]
+
+        replan_resp = self.client.post(
+            f"/v1/builds/{build_id}/replan",
+            json={"action": "ABORT", "reason": "unsafe change requested"},
+        )
+        self.assertEqual(replan_resp.status_code, 200)
+        self.assertEqual(replan_resp.json()["action"], "ABORT")
+
+        build_resp = self.client.get(f"/v1/builds/{build_id}")
+        self.assertEqual(build_resp.status_code, 200)
+        self.assertEqual(build_resp.json()["status"], "aborted")
+
+    def test_debt_and_policy_violation_endpoints(self) -> None:
+        create_resp = self.client.post("/v1/builds", json=self._create_payload())
+        build_id = create_resp.json()["build_id"]
+        node_id = create_resp.json()["dag"][0]["node_id"]
+
+        debt_resp = self.client.post(
+            f"/v1/builds/{build_id}/debt",
+            json={
+                "node_id": node_id,
+                "summary": "defer flaky integration coverage",
+                "severity": "high",
+            },
+        )
+        self.assertEqual(debt_resp.status_code, 200)
+        self.assertEqual(debt_resp.json()["severity"], "high")
+
+        debt_list_resp = self.client.get(f"/v1/builds/{build_id}/debt")
+        self.assertEqual(debt_list_resp.status_code, 200)
+        self.assertGreaterEqual(len(debt_list_resp.json()), 1)
+
+        policy_resp = self.client.post(
+            f"/v1/builds/{build_id}/policy-violations",
+            json={
+                "code": "blocked_command",
+                "message": "rm -rf blocked by policy",
+                "source": "command_guard",
+                "blocking": True,
+            },
+        )
+        self.assertEqual(policy_resp.status_code, 200)
+        self.assertEqual(policy_resp.json()["code"], "blocked_command")
+
+        violations_resp = self.client.get(f"/v1/builds/{build_id}/policy-violations")
+        self.assertEqual(violations_resp.status_code, 200)
+        self.assertGreaterEqual(len(violations_resp.json()), 1)
+
+        build_resp = self.client.get(f"/v1/builds/{build_id}")
+        self.assertEqual(build_resp.status_code, 200)
+        self.assertEqual(build_resp.json()["status"], "failed")
+
 
 if __name__ == "__main__":
     unittest.main()
