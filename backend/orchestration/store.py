@@ -8,9 +8,11 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from models.builds import (
+    BuildCheckpoint,
     BuildCreateRequest,
     BuildEvent,
     BuildRun,
+    BuildRunSummary,
     BuildStatus,
     DagNode,
     utc_now,
@@ -31,6 +33,7 @@ class BuildStore:
         self._lock = asyncio.Lock()
         self._builds: dict[UUID, BuildRun] = {}
         self._events: dict[UUID, list[BuildEvent]] = defaultdict(list)
+        self._checkpoints: dict[UUID, list[BuildCheckpoint]] = defaultdict(list)
 
     async def create_build(self, *, user_id: str, request: BuildCreateRequest) -> BuildRun:
         async with self._lock:
@@ -70,11 +73,48 @@ class BuildStore:
                         payload={"level": 0, "nodes": level_zero_nodes},
                     )
                 )
+            self._append_checkpoint_unlocked(
+                build_id=build_id,
+                status=build.status,
+                reason="build_created",
+            )
+            self._append_checkpoint_event_unlocked(
+                build_id=build_id,
+                reason="build_created",
+                status=build.status,
+            )
             return build
 
     async def get_build(self, build_id: UUID) -> BuildRun | None:
         async with self._lock:
             return self._builds.get(build_id)
+
+    async def list_builds(
+        self,
+        *,
+        user_id: str | None = None,
+        status: BuildStatus | None = None,
+        limit: int = 20,
+    ) -> list[BuildRunSummary]:
+        async with self._lock:
+            rows = list(self._builds.values())
+            if user_id:
+                rows = [row for row in rows if row.created_by == user_id]
+            if status is not None:
+                rows = [row for row in rows if row.status == status]
+            rows.sort(key=lambda row: row.created_at, reverse=True)
+            rows = rows[: max(1, min(limit, 100))]
+            return [
+                BuildRunSummary(
+                    build_id=row.build_id,
+                    repo_url=row.repo_url,
+                    objective=row.objective,
+                    status=row.status,
+                    created_at=row.created_at,
+                    updated_at=row.updated_at,
+                )
+                for row in rows
+            ]
 
     async def resume_build(self, build_id: UUID, *, reason: str | None = None) -> BuildRun:
         async with self._lock:
@@ -92,6 +132,16 @@ class BuildStore:
                     build_id=build_id,
                     payload={"reason": reason or "manual_resume"},
                 )
+            )
+            self._append_checkpoint_unlocked(
+                build_id=build_id,
+                status=build.status,
+                reason=reason or "manual_resume",
+            )
+            self._append_checkpoint_event_unlocked(
+                build_id=build_id,
+                reason=reason or "manual_resume",
+                status=build.status,
             )
             return build
 
@@ -119,7 +169,43 @@ class BuildStore:
                     payload={"final_status": BuildStatus.aborted.value},
                 )
             )
+            self._append_checkpoint_unlocked(
+                build_id=build_id,
+                status=build.status,
+                reason=reason or "manual_abort",
+            )
+            self._append_checkpoint_event_unlocked(
+                build_id=build_id,
+                reason=reason or "manual_abort",
+                status=build.status,
+            )
             return build
+
+    async def create_checkpoint(
+        self,
+        build_id: UUID,
+        *,
+        reason: str,
+    ) -> BuildCheckpoint:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+            checkpoint = self._append_checkpoint_unlocked(
+                build_id=build_id,
+                status=build.status,
+                reason=reason,
+            )
+            self._append_checkpoint_event_unlocked(
+                build_id=build_id,
+                reason=reason,
+                status=build.status,
+            )
+            return checkpoint
+
+    async def list_checkpoints(self, build_id: UUID) -> list[BuildCheckpoint]:
+        async with self._lock:
+            return list(self._checkpoints.get(build_id, []))
 
     async def list_events(self, build_id: UUID) -> list[BuildEvent]:
         async with self._lock:
@@ -146,6 +232,43 @@ class BuildStore:
     def _append_event_unlocked(self, event: BuildEvent) -> None:
         self._events[event.build_id].append(event)
 
+    def _append_checkpoint_unlocked(
+        self,
+        *,
+        build_id: UUID,
+        status: BuildStatus,
+        reason: str,
+    ) -> BuildCheckpoint:
+        checkpoint = BuildCheckpoint(
+            checkpoint_id=uuid4(),
+            build_id=build_id,
+            status=status,
+            reason=reason,
+            event_cursor=len(self._events.get(build_id, [])),
+        )
+        self._checkpoints[build_id].append(checkpoint)
+        return checkpoint
+
+    def _append_checkpoint_event_unlocked(
+        self,
+        *,
+        build_id: UUID,
+        reason: str,
+        status: BuildStatus,
+    ) -> None:
+        latest = self._checkpoints.get(build_id, [])
+        checkpoint_id = latest[-1].checkpoint_id if latest else None
+        self._append_event_unlocked(
+            BuildEvent(
+                event_type="CHECKPOINT_CREATED",
+                build_id=build_id,
+                payload={
+                    "checkpoint_id": str(checkpoint_id) if checkpoint_id else None,
+                    "reason": reason,
+                    "status": status.value,
+                },
+            )
+        )
+
 
 build_store = BuildStore()
-

@@ -55,6 +55,35 @@ class BuildRouteTests(unittest.TestCase):
         self.assertEqual(fetched["build_id"], build_id)
         self.assertEqual(fetched["repo_url"], self._create_payload()["repo_url"])
 
+    def test_list_builds_filters_by_status(self) -> None:
+        created_ids: list[str] = []
+        for idx in range(3):
+            payload = {
+                "repo_url": f"https://github.com/octocat/repo-{idx}",
+                "objective": f"objective-{idx}",
+            }
+            resp = self.client.post("/v1/builds", json=payload)
+            self.assertEqual(resp.status_code, 200)
+            created_ids.append(resp.json()["build_id"])
+
+        abort_resp = self.client.post(
+            f"/v1/builds/{created_ids[0]}/abort",
+            json={"reason": "status filter test"},
+        )
+        self.assertEqual(abort_resp.status_code, 200)
+
+        running_resp = self.client.get("/v1/builds?status=running&limit=20")
+        self.assertEqual(running_resp.status_code, 200)
+        running_rows = running_resp.json()
+        self.assertGreaterEqual(len(running_rows), 2)
+        self.assertTrue(all(row["status"] == "running" for row in running_rows))
+
+        aborted_resp = self.client.get("/v1/builds?status=aborted&limit=20")
+        self.assertEqual(aborted_resp.status_code, 200)
+        aborted_rows = aborted_resp.json()
+        self.assertGreaterEqual(len(aborted_rows), 1)
+        self.assertTrue(all(row["status"] == "aborted" for row in aborted_rows))
+
     def test_abort_then_resume_conflict(self) -> None:
         create_resp = self.client.post("/v1/builds", json=self._create_payload())
         build_id = create_resp.json()["build_id"]
@@ -73,6 +102,26 @@ class BuildRouteTests(unittest.TestCase):
         self.assertEqual(resume_resp.status_code, 409)
         self.assertEqual(resume_resp.json()["detail"]["code"], "build_resume_conflict")
 
+    def test_manual_checkpoint_creation(self) -> None:
+        create_resp = self.client.post("/v1/builds", json=self._create_payload())
+        self.assertEqual(create_resp.status_code, 200)
+        build_id = create_resp.json()["build_id"]
+
+        checkpoint_resp = self.client.post(
+            f"/v1/builds/{build_id}/checkpoints",
+            json={"reason": "test_checkpoint"},
+        )
+        self.assertEqual(checkpoint_resp.status_code, 200)
+        checkpoint = checkpoint_resp.json()
+        self.assertEqual(checkpoint["build_id"], build_id)
+        self.assertEqual(checkpoint["reason"], "test_checkpoint")
+
+        list_resp = self.client.get(f"/v1/builds/{build_id}/checkpoints")
+        self.assertEqual(list_resp.status_code, 200)
+        checkpoints = list_resp.json()
+        self.assertGreaterEqual(len(checkpoints), 2)  # includes initial build_created checkpoint
+        self.assertEqual(checkpoints[-1]["reason"], "test_checkpoint")
+
     def test_events_stream_contains_core_lifecycle_events(self) -> None:
         create_resp = self.client.post("/v1/builds", json=self._create_payload())
         build_id = create_resp.json()["build_id"]
@@ -84,8 +133,8 @@ class BuildRouteTests(unittest.TestCase):
         self.assertIn("event: BUILD_STARTED", events_resp.text)
         self.assertIn("event: BUILD_ABORTED", events_resp.text)
         self.assertIn("event: BUILD_FINISHED", events_resp.text)
+        self.assertIn("event: CHECKPOINT_CREATED", events_resp.text)
 
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -89,6 +89,15 @@ class BuildEvent(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
 
 
+class BuildCheckpoint(BaseModel):
+    checkpoint_id: UUID
+    build_id: UUID
+    status: BuildStatus
+    reason: str
+    event_cursor: int = 0
+    created_at: datetime = Field(default_factory=utc_now)
+
+
 class BuildRun(BaseModel):
     build_id: UUID
     created_by: str
@@ -105,9 +114,21 @@ class BuildRun(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class BuildRunSummary(BaseModel):
+    build_id: UUID
+    repo_url: str
+    objective: str
+    status: BuildStatus
+    created_at: datetime
+    updated_at: datetime
+
+
 class BuildCreateRequest(BaseModel):
     repo_url: str
     objective: str = "Run autonomous code quality orchestration."
     dag: list[DagNode] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
+
+class BuildCheckpointRequest(BaseModel):
+    reason: str = "manual_checkpoint"
