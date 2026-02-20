@@ -42,6 +42,26 @@ class ValidationGateResult(BaseModel):
     summary: ValidationSummary
 
 
+class ValidationThresholdProfile(BaseModel):
+    profile_name: str = "beta_default"
+    min_repo_count: int = 10
+    min_total_runs: int = 30
+    min_runs_per_repo: int = 3
+    min_success_rate: float = 0.80
+    min_average_success_rate: float = 0.85
+    max_duration_cv: float = 0.35
+    release_ready_min_score: float = 85.0
+
+
+class ValidationRubricResult(BaseModel):
+    profile: ValidationThresholdProfile
+    passed: bool
+    release_ready: bool
+    score: float
+    reasons: list[str] = Field(default_factory=list)
+    summary: ValidationSummary
+
+
 def summarize_validation_runs(runs: list[ValidationRun]) -> ValidationSummary:
     grouped: dict[str, list[ValidationRun]] = {}
     for run in runs:
@@ -104,6 +124,47 @@ def evaluate_validation_gates(
     )
 
 
+def default_validation_threshold_profile() -> ValidationThresholdProfile:
+    return ValidationThresholdProfile()
+
+
+def evaluate_validation_rubric(
+    summary: ValidationSummary,
+    *,
+    profile: ValidationThresholdProfile | None = None,
+) -> ValidationRubricResult:
+    profile = profile or default_validation_threshold_profile()
+    gate = evaluate_validation_gates(
+        summary,
+        min_success_rate=profile.min_success_rate,
+        max_duration_cv=profile.max_duration_cv,
+        min_runs_per_repo=profile.min_runs_per_repo,
+    )
+
+    reasons = list(gate.reasons)
+    if summary.repo_count < profile.min_repo_count:
+        reasons.append(f"repo_count_below_threshold:{summary.repo_count}")
+    if summary.run_count < profile.min_total_runs:
+        reasons.append(f"total_runs_below_threshold:{summary.run_count}")
+    if summary.avg_success_rate < profile.min_average_success_rate:
+        reasons.append(
+            f"average_success_rate_below_threshold:{summary.avg_success_rate:.3f}"
+        )
+
+    score = round(_compute_rubric_score(summary, profile=profile), 2)
+    unique_reasons = _dedupe_preserve_order(reasons)
+    passed = len(unique_reasons) == 0
+    release_ready = passed and score >= profile.release_ready_min_score
+    return ValidationRubricResult(
+        profile=profile,
+        passed=passed,
+        release_ready=release_ready,
+        score=score,
+        reasons=unique_reasons,
+        summary=summary,
+    )
+
+
 def _mean(values: list[float] | list[int]) -> float:
     if not values:
         return 0.0
@@ -116,3 +177,41 @@ def _stddev(values: list[int], *, mean: float) -> float:
     variance = sum((float(value) - mean) ** 2 for value in values) / float(len(values))
     return sqrt(variance)
 
+
+def _compute_rubric_score(
+    summary: ValidationSummary,
+    *,
+    profile: ValidationThresholdProfile,
+) -> float:
+    repo_ratio = _ratio(summary.repo_count, profile.min_repo_count)
+    run_ratio = _ratio(summary.run_count, profile.min_total_runs)
+    coverage_score = 25.0 * ((repo_ratio * 0.6) + (run_ratio * 0.4))
+
+    success_ratio = _ratio(summary.avg_success_rate, profile.min_average_success_rate)
+    success_score = 50.0 * success_ratio
+
+    if summary.max_duration_cv <= profile.max_duration_cv:
+        stability_ratio = 1.0
+    else:
+        overage = summary.max_duration_cv - profile.max_duration_cv
+        stability_ratio = max(0.0, 1.0 - (overage / max(profile.max_duration_cv, 0.001)))
+    stability_score = 25.0 * stability_ratio
+
+    return coverage_score + success_score + stability_score
+
+
+def _ratio(value: float | int, baseline: float | int) -> float:
+    if baseline <= 0:
+        return 1.0
+    return max(0.0, min(float(value) / float(baseline), 1.0))
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        result.append(value)
+    return result
