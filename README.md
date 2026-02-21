@@ -83,3 +83,8 @@ Protected routes redirect to `/sign-in` (Clerk-hosted UI component).
 ## Backend
 
 If you want to run the FastAPI backend included in this repo, see `backend/README.md`.
+
+## Program Status (SSOT)
+
+Single source of truth for implementation status and remaining work:
+`/Users/christopher/Documents/AntiGravity/clarity-check/doc/plans/agentic-orchestrator-program/00-single-source-of-truth.md`
