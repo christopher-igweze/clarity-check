@@ -8,9 +8,9 @@ for downstream route handlers.
 from __future__ import annotations
 
 import jwt
-from fastapi import Request, HTTPException
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 
 from api.middleware.authorization import derive_roles_and_capabilities
 from config import settings
@@ -21,6 +21,9 @@ PUBLIC_PREFIXES = ("/api/webhook/",)
 
 
 class SupabaseAuthMiddleware(BaseHTTPMiddleware):
+    def _unauthorized(self, detail: str) -> JSONResponse:
+        return JSONResponse(status_code=401, content={"detail": detail})
+
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
@@ -34,7 +37,7 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
 
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
-            raise HTTPException(status_code=401, detail="Missing Bearer token")
+            return self._unauthorized("Missing Bearer token")
 
         token = auth_header.removeprefix("Bearer ").strip()
 
@@ -50,8 +53,8 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
             request.state.roles = roles
             request.state.capabilities = capabilities
         except jwt.ExpiredSignatureError:
-            raise HTTPException(status_code=401, detail="Token expired")
+            return self._unauthorized("Token expired")
         except jwt.InvalidTokenError as exc:
-            raise HTTPException(status_code=401, detail=f"Invalid token: {exc}")
+            return self._unauthorized(f"Invalid token: {exc}")
 
         return await call_next(request)
