@@ -19,18 +19,34 @@ from api.routes import program  # noqa: E402
 
 
 class ProgramAliasRouteTests(unittest.TestCase):
+    _original_enforce_capability_auth: bool | None = None
+
     @classmethod
     def setUpClass(cls) -> None:
+        from config import settings  # local import to avoid early settings access in module load
+
+        cls._original_enforce_capability_auth = settings.enforce_capability_auth
+        settings.enforce_capability_auth = True
+
         app = FastAPI()
         app.state.limiter = program.limiter
 
         @app.middleware("http")
         async def _inject_user(request, call_next):
             request.state.user_id = "user_alias_test"
+            request.state.roles = ["admin"]
+            request.state.capabilities = ["*"]
             return await call_next(request)
 
         app.include_router(program.router)
         cls.client = TestClient(app)
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        if cls._original_enforce_capability_auth is not None:
+            from config import settings  # local import to avoid module side-effects
+
+            settings.enforce_capability_auth = cls._original_enforce_capability_auth
 
     def setUp(self) -> None:
         program.limiter.reset()
