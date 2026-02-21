@@ -180,37 +180,33 @@ const NewScan = () => {
 
     try {
       if (BUILD_CONTROL_PLANE_ENABLED) {
-        try {
-          const objective = `Audit ${repoUrl.trim()} for product risk and reliability`;
-          const build = await createBuildRun({
+        const objective = `Audit ${repoUrl.trim()} for product risk and reliability`;
+        const build = await createBuildRun({
+          repoUrl: repoUrl.trim(),
+          objective,
+          metadata: {
+            scan_mode: "autonomous",
+            fallback_scan_mode: "deterministic",
+            project_intake: {
+              project_origin: projectOrigin,
+              product_summary: productSummary.trim(),
+              target_users: targetUsers.trim(),
+              sensitive_data: sensitiveData,
+              must_not_break_flows: mustNotBreakFlows,
+              deployment_target: deploymentTarget,
+              scale_expectation: scaleExpectation,
+            },
+            primer_summary: primer?.summary || null,
+            primer_confidence: primer?.confidence ?? null,
+          },
+        });
+        navigate("/scan/live", {
+          state: {
+            buildId: build.buildId,
             repoUrl: repoUrl.trim(),
-            objective,
-            metadata: {
-              scan_mode: "autonomous",
-              fallback_scan_mode: "deterministic",
-              project_intake: {
-                project_origin: projectOrigin,
-                product_summary: productSummary.trim(),
-                target_users: targetUsers.trim(),
-                sensitive_data: sensitiveData,
-                must_not_break_flows: mustNotBreakFlows,
-                deployment_target: deploymentTarget,
-                scale_expectation: scaleExpectation,
-              },
-              primer_summary: primer?.summary || null,
-              primer_confidence: primer?.confidence ?? null,
-            },
-          });
-          navigate("/scan/live", {
-            state: {
-              buildId: build.buildId,
-              repoUrl: repoUrl.trim(),
-            },
-          });
-          return;
-        } catch {
-          // Keep deterministic scan fallback available for resilience.
-        }
+          },
+        });
+        return;
       }
 
       const { scanId, quotaRemaining } = await startAudit({

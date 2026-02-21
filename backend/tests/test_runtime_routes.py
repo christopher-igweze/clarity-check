@@ -275,6 +275,43 @@ class RuntimeRouteTests(unittest.TestCase):
         self.assertIn("failed", statuses)
         self.assertIn("completed", statuses)
 
+    def test_runtime_tick_switches_to_deterministic_fallback_on_autonomous_failure(self) -> None:
+        build_id = self._create_build(
+            metadata={
+                "scan_mode": "autonomous",
+                "fallback_scan_mode": "deterministic",
+                "runner_results": {
+                    "scanner": {
+                        "status_sequence": ["failed"],
+                        "error_sequence": ["autonomous step failed"],
+                    }
+                },
+            },
+        )
+        self.client.post(f"/v1/builds/{build_id}/runtime/bootstrap")
+
+        first_tick = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+        self.assertEqual(first_tick.status_code, 200)
+        self.assertFalse(first_tick.json()["finished"])
+
+        build_mid = self.client.get(f"/v1/builds/{build_id}").json()
+        self.assertEqual(build_mid["status"], "running")
+        self.assertEqual(build_mid["metadata"]["scan_mode"], "deterministic")
+        self.assertTrue(build_mid["metadata"]["fallback_applied"])
+        mid_nodes = [row["node_id"] for row in build_mid["dag"]]
+        self.assertIn("deterministic-scan", mid_nodes)
+
+        for _ in range(5):
+            tick_resp = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+            self.assertEqual(tick_resp.status_code, 200)
+            if tick_resp.json().get("finished"):
+                break
+
+        build_final = self.client.get(f"/v1/builds/{build_id}").json()
+        self.assertEqual(build_final["status"], "completed")
+        self.assertGreaterEqual(len(build_final["replan_history"]), 1)
+        self.assertEqual(build_final["replan_history"][0]["action"], "REDUCE_SCOPE")
+
     def test_runtime_tick_fails_after_retry_budget_exhausted(self) -> None:
         build_id = self._create_build(
             dag=[

@@ -95,6 +95,28 @@ async def execute_runtime_tick(build_id: UUID) -> RuntimeTickResult:
                     result.pending_nodes.sort()
                 continue
 
+            fallback_applied = await build_store.apply_scan_mode_fallback(
+                build_id,
+                to_mode="deterministic",
+                reason=f"runner_failed:{node_id}",
+                source="runtime_tick",
+            )
+            if fallback_applied is not None:
+                await runtime_gateway.reset_build_state(
+                    fallback_applied,
+                    reason=f"fallback_after_failure:{node_id}",
+                )
+                await build_store.record_replan_decision(
+                    build_id,
+                    action=ReplanAction.reduce_scope,
+                    reason=f"fallback_to_deterministic:{node_id}",
+                    replacement_nodes=[],
+                    source="runtime_tick",
+                )
+                result.finished = False
+                result.pending_nodes = sorted([node.node_id for node in fallback_applied.dag])
+                continue
+
             await build_store.record_gate_decision(
                 build_id,
                 gate=GateType.policy,

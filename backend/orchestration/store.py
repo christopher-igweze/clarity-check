@@ -990,6 +990,72 @@ class BuildStore:
             )
             self._save_state_unlocked()
 
+    async def apply_scan_mode_fallback(
+        self,
+        build_id: UUID,
+        *,
+        to_mode: str,
+        reason: str,
+        source: str = "runtime_tick",
+    ) -> BuildRun | None:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+
+            current_mode = str(build.metadata.get("scan_mode") or "autonomous").strip().lower()
+            target_mode = to_mode.strip().lower()
+            fallback_mode = str(build.metadata.get("fallback_scan_mode") or "").strip().lower()
+            fallback_applied = bool(build.metadata.get("fallback_applied"))
+
+            if fallback_applied:
+                return None
+            if fallback_mode != target_mode:
+                return None
+            if current_mode == target_mode:
+                return None
+            if target_mode != "deterministic":
+                return None
+
+            fallback_metadata = dict(build.metadata)
+            fallback_metadata["scan_mode"] = target_mode
+            fallback_metadata["fallback_applied"] = True
+            fallback_metadata["fallback_from_mode"] = current_mode
+            fallback_metadata["fallback_reason"] = reason
+
+            fallback_dag = _deterministic_default_dag()
+            build.dag = fallback_dag
+            build.metadata = fallback_metadata
+            self._refresh_dag_levels_unlocked(build)
+            build.metadata["level_cursor"] = 0
+            build.updated_at = utc_now()
+
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type="FALLBACK_MODE_SWITCHED",
+                    build_id=build_id,
+                    payload={
+                        "from_mode": current_mode,
+                        "to_mode": target_mode,
+                        "reason": reason,
+                        "source": source,
+                        "dag_nodes": [node.node_id for node in fallback_dag],
+                    },
+                )
+            )
+            emit_orchestration_event(
+                event="fallback_mode_switched",
+                build_id=str(build_id),
+                data={
+                    "from_mode": current_mode,
+                    "to_mode": target_mode,
+                    "reason": reason,
+                    "source": source,
+                },
+            )
+            self._save_state_unlocked()
+            return build
+
     def _append_event_unlocked(self, event: BuildEvent) -> None:
         self._events[event.build_id].append(event)
 
