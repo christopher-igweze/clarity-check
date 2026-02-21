@@ -27,13 +27,13 @@ If any other doc conflicts with this file, this file wins.
 1. Execution runtime:
 OpenHands/runner bridge + runtime gateway.
 2. Orchestration state:
-`BuildStore` + `ProgramStore` with durable snapshot adapters.
+`BuildStore` + `ProgramStore` with normalized-table persistence adapters and snapshot fallback.
 3. Durability:
-Supabase snapshot adapter (`control_plane_state` table) + optional local file fallback.
+Supabase normalized control-plane tables (`build_*`, `validation_*`, `program_*`) + snapshot fallback (`control_plane_state`) + optional local file fallback.
 4. Ephemeral coordination:
-Redis optional for nonce/idempotency; in-process fallback when Redis not configured.
+Redis-backed nonce/idempotency/lease coordination with explicit fail-closed mode (`COORDINATION_FAIL_CLOSED=true`).
 5. Runtime execution authority:
-Backend `RuntimeWorker` drives runtime ticks; frontend observes events and sends control actions only.
+Backend `RuntimeWorker` drives runtime ticks with distributed lease + heartbeat ownership per build; frontend observes events and only uses guarded fallback ticking if worker is disabled/unhealthy.
 6. API shape:
 Canonical program APIs under `/v1/program/*` with week endpoints retained for compatibility.
 7. UI surfaces:
@@ -44,8 +44,9 @@ Canonical program APIs under `/v1/program/*` with week endpoints retained for co
 ### A) Build Flow (Autonomous Default)
 1. `NewScan` creates a `BuildRun` via `/v1/builds` when `VITE_BUILD_CONTROL_PLANE_ENABLED=true`.
 2. `scan_mode` defaults to `autonomous` (explicitly passed in metadata from UI).
-3. `ScanLive` streams build events and does not run client tick loops.
-4. Backend runtime worker bootstraps/ticks builds to completion or fail state.
+3. `ScanLive` streams build events and does not drive normal orchestration loops.
+4. Backend runtime worker bootstraps/ticks builds to completion or fail state with lease ownership.
+5. If worker is disabled/unhealthy, `ScanLive` uses a guarded tick safety fallback (backend API call) to prevent stuck `running` builds.
 
 Expected user-visible behavior:
 1. Starting a scan should create a build and open live stream.
@@ -94,26 +95,27 @@ validation campaign lifecycle, checklist + rollback drill + go/no-go decision, a
 
 ## Validation Snapshot (Current)
 Last verified on February 21, 2026:
-1. Backend tests: `85 passed` (`cd backend && PYTHONPATH=. pytest -q`).
+1. Backend tests: `91 passed` (`cd backend && PYTHONPATH=. pytest -q`).
 2. Frontend unit tests: `10 passed` (`npm run test`).
 3. Frontend production build: success (`npm run build`).
 
 ## Delivered Work vs Production Criteria
 
 ### Criterion 1: No in-memory source-of-truth for critical state
-Status: Partial
-1. Durable snapshots now exist (Supabase + optional file fallback).
-2. Still not full normalized DB read/write for every build/program entity.
+Status: Done in code (deployment config still required)
+1. Build/program entities now persist to normalized Supabase tables with startup rehydration.
+2. Snapshot/file persistence remains as compatibility fallback only.
 
 ### Criterion 2: No client-driven runtime orchestration loops
-Status: Done
+Status: Done (with guarded emergency fallback)
 1. Browser tick loop removed from `ScanLive`.
-2. Backend runtime worker owns ticking.
+2. Backend runtime worker owns ticking under distributed lease/heartbeat.
+3. Client tick is now only a bounded safety fallback path when worker is disabled or heartbeat appears stalled.
 
 ### Criterion 3: Multi-instance-safe idempotency + replay protection
-Status: Partial
-1. Redis-backed coordination implemented (optional).
-2. Production readiness depends on actually deploying Redis and enforcing it.
+Status: Done in code (deployment config still required)
+1. Redis-backed coordination now covers nonce replay, idempotency, and runtime build leases.
+2. Fail-closed mode is implemented (`COORDINATION_FAIL_CLOSED=true`) and returns service-level errors when coordination is unavailable.
 
 ### Criterion 4: Stable non-week API contracts
 Status: Done (with compatibility bridge)
@@ -133,11 +135,11 @@ Status: Partial
 ## Remaining Work (Prioritized)
 
 ### P0 (Required before claiming production-ready)
-1. Replace snapshot-centric persistence with normalized DB repositories for build/program entities.
-2. Add distributed lease/heartbeat lock for runtime worker ownership per build.
-3. Enable and enforce capability auth in deployed envs with real claims mapping from auth provider.
-4. Define and enforce fail-closed behavior when Redis is unavailable in production.
-5. Complete rollout runbooks: incident response, rollback command path, on-call playbook.
+1. Enable production flags in deployed environments:
+`CONTROL_PLANE_USE_SUPABASE=true`, `COORDINATION_FAIL_CLOSED=true`, `ENFORCE_CAPABILITY_AUTH=true`, `REDIS_URL=...`.
+2. Apply latest migrations in staging/prod and verify table-level RLS behavior for new entities.
+3. Complete rollout runbooks: incident response, rollback command path, on-call playbook.
+4. Finalize auth claim mapping in production identity provider so capability enforcement is strict by default.
 
 ### P1 (Required for robust platform behavior)
 1. Implement planner policy layer for dynamic DAG selection and richer autonomous/deep-scan planning.
@@ -172,4 +174,5 @@ For every merged PR affecting platform/runtime/orchestration:
 4. Auth/capabilities: `/Users/christopher/Documents/AntiGravity/clarity-check/backend/api/middleware/auth.py`, `/Users/christopher/Documents/AntiGravity/clarity-check/backend/api/middleware/authorization.py`
 5. New scan + live UI: `/Users/christopher/Documents/AntiGravity/clarity-check/src/pages/NewScan.tsx`, `/Users/christopher/Documents/AntiGravity/clarity-check/src/pages/ScanLive.tsx`
 6. Release readiness UI: `/Users/christopher/Documents/AntiGravity/clarity-check/src/pages/ReleaseReadiness.tsx`
-7. Migration: `/Users/christopher/Documents/AntiGravity/clarity-check/supabase/migrations/20260221123000_control_plane_persistence.sql`
+7. Normalized persistence adapters: `/Users/christopher/Documents/AntiGravity/clarity-check/backend/services/control_plane_tables.py`
+8. Migrations: `/Users/christopher/Documents/AntiGravity/clarity-check/supabase/migrations/20260221123000_control_plane_persistence.sql`, `/Users/christopher/Documents/AntiGravity/clarity-check/supabase/migrations/20260221170000_control_plane_entity_hardening.sql`

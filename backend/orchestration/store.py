@@ -35,6 +35,10 @@ from models.builds import (
 from orchestration.scheduler import compute_dag_levels
 from orchestration.telemetry import emit_orchestration_event
 from services.control_plane_state import load_state_snapshot, save_state_snapshot
+from services.control_plane_tables import (
+    load_build_store_entities,
+    save_build_store_entities,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -200,7 +204,7 @@ class BuildStore:
             if status is not None:
                 rows = [row for row in rows if row.status == status]
             rows.sort(key=lambda row: row.created_at, reverse=True)
-            rows = rows[: max(1, min(limit, 100))]
+            rows = rows[: max(1, min(limit, 5000))]
             return [
                 BuildRunSummary(
                     build_id=row.build_id,
@@ -219,6 +223,16 @@ class BuildStore:
                 )
                 for row in rows
             ]
+
+    async def list_running_build_ids(self) -> list[UUID]:
+        async with self._lock:
+            rows = [
+                row
+                for row in self._builds.values()
+                if row.status == BuildStatus.running
+            ]
+            rows.sort(key=lambda row: row.created_at)
+            return [row.build_id for row in rows]
 
     async def resume_build(self, build_id: UUID, *, reason: str | None = None) -> BuildRun:
         async with self._lock:
@@ -1228,10 +1242,16 @@ class BuildStore:
 
         if not loop_running:
             try:
-                payload = asyncio.run(load_state_snapshot(self._state_key))
+                payload = asyncio.run(load_build_store_entities())
             except Exception:
-                logger.warning("Failed to load build store snapshot from Supabase.")
+                logger.warning("Failed to load build store entities from normalized tables.")
                 payload = None
+            if payload is None:
+                try:
+                    payload = asyncio.run(load_state_snapshot(self._state_key))
+                except Exception:
+                    logger.warning("Failed to load build store snapshot from Supabase.")
+                    payload = None
 
         if payload is None and self._state_path and self._state_path.exists():
             try:
@@ -1303,9 +1323,11 @@ class BuildStore:
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(save_state_snapshot(self._state_key, payload))
+            loop.create_task(save_build_store_entities(payload))
         except RuntimeError:
             try:
                 asyncio.run(save_state_snapshot(self._state_key, payload))
+                asyncio.run(save_build_store_entities(payload))
             except Exception:
                 logger.warning("Failed to save build store snapshot to Supabase.")
         except Exception:

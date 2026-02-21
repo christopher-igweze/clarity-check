@@ -560,7 +560,9 @@ export async function submitReplanDecision({
   return (await resp.json()) as ReplanDecisionResponse;
 }
 
-export async function bootstrapBuildRuntime(buildId: string): Promise<{ runtimeId: string }> {
+export async function bootstrapBuildRuntime(
+  buildId: string,
+): Promise<{ runtimeId: string; runtimeWorkerEnabled: boolean }> {
   const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}/runtime/bootstrap`, {
     method: "POST",
     headers: await getAuthHeaders(),
@@ -569,7 +571,11 @@ export async function bootstrapBuildRuntime(buildId: string): Promise<{ runtimeI
     throw await toApiError(resp, "Failed to bootstrap runtime");
   }
   const data = await resp.json();
-  return { runtimeId: data.runtime_id as string };
+  const metadata = (data.metadata || {}) as Record<string, unknown>;
+  return {
+    runtimeId: data.runtime_id as string,
+    runtimeWorkerEnabled: Boolean(metadata.runtime_worker_enabled ?? true),
+  };
 }
 
 export async function tickBuildRuntime(buildId: string): Promise<BuildRuntimeTick> {

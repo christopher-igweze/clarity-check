@@ -69,6 +69,7 @@ class RuntimeRouteTests(unittest.TestCase):
         self.assertEqual(boot_resp.status_code, 200)
         session = boot_resp.json()
         self.assertEqual(session["build_id"], build_id)
+        self.assertIn("runtime_worker_enabled", session.get("metadata", {}))
 
         status_resp = self.client.get(f"/v1/builds/{build_id}/runtime/status")
         self.assertEqual(status_resp.status_code, 200)

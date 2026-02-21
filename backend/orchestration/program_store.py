@@ -45,6 +45,10 @@ from orchestration.benchmark_harness import ValidationBenchmarkReport, compile_b
 from orchestration.store import build_store
 from orchestration.validation import ValidationRun
 from services.control_plane_state import load_state_snapshot, save_state_snapshot
+from services.control_plane_tables import (
+    load_program_store_entities,
+    save_program_store_entities,
+)
 from services.ephemeral_coordination import ephemeral_coordinator
 
 logger = logging.getLogger(__name__)
@@ -268,6 +272,9 @@ class ProgramStore:
         if not key[1]:
             raise ValueError("idempotency_key_required")
         coord_key = f"{build_id}:{key[1]}"
+        build = await build_store.get_build(build_id)
+        if build is None:
+            raise KeyError("build_not_found")
 
         cached_distributed = await ephemeral_coordinator.get_idempotency(
             coord_key,
@@ -298,6 +305,7 @@ class ProgramStore:
         async with self._lock:
             cached_payload = {
                 "created_ts": int(time.time()),
+                "user_id": build.created_by,
                 "checkpoint": checkpoint.model_dump(mode="json"),
             }
             self._idempotent_checkpoints[key] = cached_payload
@@ -443,11 +451,18 @@ class ProgramStore:
 
         if not loop_running:
             try:
-                loaded = asyncio.run(load_state_snapshot(self._state_key))
+                loaded = asyncio.run(load_program_store_entities())
                 if isinstance(loaded, dict):
                     raw = loaded
             except Exception:
-                logger.warning("Failed loading program store snapshot from Supabase.")
+                logger.warning("Failed loading program store entities from normalized tables.")
+            if raw is None:
+                try:
+                    loaded_snapshot = asyncio.run(load_state_snapshot(self._state_key))
+                    if isinstance(loaded_snapshot, dict):
+                        raw = loaded_snapshot
+                except Exception:
+                    logger.warning("Failed loading program store snapshot from Supabase.")
 
         if raw is None and self._state_path and self._state_path.exists():
             try:
@@ -537,10 +552,12 @@ class ProgramStore:
                     continue
                 checkpoint_raw = value.get("checkpoint")
                 created_ts = value.get("created_ts", 0)
+                user_id = value.get("user_id")
                 if not isinstance(checkpoint_raw, dict) or not isinstance(created_ts, int):
                     continue
                 self._idempotent_checkpoints[(build_id, idem_key)] = {
                     "created_ts": created_ts,
+                    "user_id": user_id if isinstance(user_id, str) else None,
                     "checkpoint": checkpoint_raw,
                 }
 
@@ -588,9 +605,11 @@ class ProgramStore:
         try:
             loop = asyncio.get_running_loop()
             loop.create_task(save_state_snapshot(self._state_key, payload))
+            loop.create_task(save_program_store_entities(payload))
         except RuntimeError:
             try:
                 asyncio.run(save_state_snapshot(self._state_key, payload))
+                asyncio.run(save_program_store_entities(payload))
             except Exception:
                 logger.warning("Failed writing program store snapshot to Supabase.")
         except Exception:

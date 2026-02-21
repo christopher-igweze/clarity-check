@@ -7,6 +7,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, Request
 
 from api.middleware.rate_limit import limiter, rate_limit_string
+from config import settings
 from models.runtime import (
     RuntimeMetric,
     RuntimeRunLog,
@@ -34,12 +35,17 @@ async def bootstrap_runtime(build_id: UUID, request: Request) -> RuntimeSession:
             detail={"code": "build_not_found", "message": "Build not found."},
         )
     session = await runtime_gateway.bootstrap(build)
+    session.metadata = {
+        **(session.metadata or {}),
+        "runtime_worker_enabled": settings.runtime_worker_enabled,
+    }
     await build_store.append_event(
         build_id,
         event_type="RUNTIME_BOOTSTRAPPED",
         payload={
             "runtime_id": str(session.runtime_id),
             "status": session.status,
+            "runtime_worker_enabled": settings.runtime_worker_enabled,
         },
     )
     return session

@@ -9,6 +9,7 @@ import {
   streamBuildEvents,
   streamScanStatus,
   submitReplanDecision,
+  tickBuildRuntime,
 } from "@/lib/api";
 import { ScanSequence } from "@/components/ScanSequence";
 
@@ -47,6 +48,7 @@ const ScanLive = () => {
   const [buildRunStatus, setBuildRunStatus] = useState<string>("running");
   const terminalRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef(status);
+  const lastBuildEventAtRef = useRef<number>(Date.now());
 
   useEffect(() => {
     statusRef.current = status;
@@ -146,6 +148,7 @@ const ScanLive = () => {
 
     if (state?.buildId) {
       const buildId = state.buildId;
+      lastBuildEventAtRef.current = Date.now();
       addLog({
         agent: "System",
         message: `Connected to build ${buildId}. Running control-plane orchestration...`,
@@ -157,6 +160,7 @@ const ScanLive = () => {
         buildId,
         onEvent: ({ event, payload }) => {
           if (cancelled) return;
+          lastBuildEventAtRef.current = Date.now();
           const data = payload.payload || {};
           const message =
             payload.message ||
@@ -210,13 +214,70 @@ const ScanLive = () => {
 
       (async () => {
         try {
-          await bootstrapBuildRuntime(buildId);
+          const { runtimeWorkerEnabled } = await bootstrapBuildRuntime(buildId);
+          if (!runtimeWorkerEnabled) {
+            addLog({
+              agent: "System",
+              message:
+                "Runtime bootstrapped. Backend worker is disabled, so this page is running tick fallback mode.",
+              type: "system",
+              color: "text-neon-orange",
+            });
+            while (!cancelled && statusRef.current === "scanning") {
+              try {
+                const tick = await tickBuildRuntime(buildId);
+                lastBuildEventAtRef.current = Date.now();
+                if (tick.finished) {
+                  break;
+                }
+              } catch (tickErr) {
+                if (cancelled) return;
+                addLog({
+                  agent: "System",
+                  message: `Fallback tick failed: ${tickErr instanceof Error ? tickErr.message : "Unknown error"}`,
+                  type: "error",
+                  color: "text-neon-red",
+                });
+                break;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 1200));
+            }
+            return;
+          }
+
           addLog({
             agent: "System",
             message: "Runtime bootstrapped. Backend worker is driving orchestration.",
             type: "system",
             color: "text-muted-foreground",
           });
+          while (!cancelled && statusRef.current === "scanning") {
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+            if (cancelled || statusRef.current !== "scanning") {
+              break;
+            }
+            if (Date.now() - lastBuildEventAtRef.current < 10000) {
+              continue;
+            }
+            try {
+              await tickBuildRuntime(buildId);
+              lastBuildEventAtRef.current = Date.now();
+              addLog({
+                agent: "System",
+                message: "Worker heartbeat gap detected. Sent a runtime tick safety nudge.",
+                type: "system",
+                color: "text-neon-orange",
+              });
+            } catch (tickErr) {
+              if (cancelled) return;
+              addLog({
+                agent: "System",
+                message: `Worker watchdog tick warning: ${tickErr instanceof Error ? tickErr.message : "Unknown error"}`,
+                type: "error",
+                color: "text-neon-orange",
+              });
+            }
+          }
         } catch (err) {
           if (cancelled) return;
           addLog({

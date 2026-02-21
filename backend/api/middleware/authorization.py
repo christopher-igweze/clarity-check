@@ -64,25 +64,30 @@ def derive_roles_and_capabilities(payload: dict) -> tuple[list[str], list[str]]:
 
     roles.update(_to_str_set(payload.get("role")))
     roles.update(_to_str_set(payload.get("roles")))
+    roles.update(_to_str_set(payload.get("org_role")))
+    roles.update(_to_str_set(payload.get("org_roles")))
     app_meta = payload.get("app_metadata")
+    user_meta = payload.get("user_metadata")
     if isinstance(app_meta, dict):
         roles.update(_to_str_set(app_meta.get("role")))
         roles.update(_to_str_set(app_meta.get("roles")))
+    if isinstance(user_meta, dict):
+        roles.update(_to_str_set(user_meta.get("role")))
+        roles.update(_to_str_set(user_meta.get("roles")))
 
     capabilities.update(_to_str_set(payload.get("capabilities")))
     capabilities.update(_to_str_set(payload.get("permissions")))
+    capabilities.update(_to_str_set(payload.get("org_permissions")))
     if isinstance(app_meta, dict):
         capabilities.update(_to_str_set(app_meta.get("capabilities")))
         capabilities.update(_to_str_set(app_meta.get("permissions")))
+    if isinstance(user_meta, dict):
+        capabilities.update(_to_str_set(user_meta.get("capabilities")))
+        capabilities.update(_to_str_set(user_meta.get("permissions")))
 
     normalized_roles = {role.strip().lower() for role in roles if role.strip()}
     for role in normalized_roles:
         capabilities.update(ROLE_CAPABILITIES.get(role, set()))
-
-    if not normalized_roles and not capabilities:
-        # Backward-compatible default when claims are absent.
-        normalized_roles = {"operator"}
-        capabilities.update(ROLE_CAPABILITIES["operator"])
 
     return sorted(normalized_roles), sorted(capabilities)
 

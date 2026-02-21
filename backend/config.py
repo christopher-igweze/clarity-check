@@ -84,10 +84,13 @@ class Settings(BaseSettings):
 
     # --- Ephemeral Coordination (optional Redis) ---
     redis_url: str | None = None
+    # Fail closed when Redis coordination is unavailable (recommended in production).
+    coordination_fail_closed: bool = False
 
     # --- Runtime Worker ---
     runtime_worker_enabled: bool = True
     runtime_worker_poll_seconds: float = 0.75
+    runtime_worker_lease_ttl_seconds: int = 20
 
     # --- Authorization ---
     # When true, sensitive control-plane routes require explicit capabilities.

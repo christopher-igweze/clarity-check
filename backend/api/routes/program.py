@@ -32,6 +32,7 @@ from models.program import (
 )
 from orchestration.benchmark_harness import ValidationBenchmarkReport
 from orchestration.program_store import program_store
+from services.ephemeral_coordination import CoordinationUnavailableError
 
 router = APIRouter()
 
@@ -204,6 +205,14 @@ async def ingest_platform_webhook(request: Request) -> PlatformWebhookResponse:
             nonce=nonce,
             signature=signature,
         )
+    except CoordinationUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "coordination_unavailable",
+                "message": str(exc),
+            },
+        ) from exc
     except ValueError as exc:
         msg = str(exc)
         code = "webhook_rejected"
@@ -245,6 +254,11 @@ async def idempotent_checkpoint(
             idempotency_key=request_body.idempotency_key,
             reason=request_body.reason,
         )
+    except CoordinationUnavailableError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "coordination_unavailable", "message": str(exc)},
+        ) from exc
     except KeyError as exc:
         raise HTTPException(
             status_code=404,
