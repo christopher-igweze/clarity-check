@@ -19,6 +19,7 @@ import DevDiagnostics from "./pages/DevDiagnostics";
 import NotFound from "./pages/NotFound";
 import OrgOnboarding from "./pages/OrgOnboarding";
 import ProgramOps from "./pages/ProgramOps";
+import ReleaseReadiness from "./pages/ReleaseReadiness";
 
 const queryClient = new QueryClient();
 
@@ -39,6 +40,7 @@ const App = () => (
             <Route path="/scan/new" element={<ProtectedRoute><NewScan /></ProtectedRoute>} />
             <Route path="/scan/live" element={<ProtectedRoute><ScanLive /></ProtectedRoute>} />
             <Route path="/program-ops" element={<ProtectedRoute><ProgramOps /></ProtectedRoute>} />
+            <Route path="/release-readiness" element={<ProtectedRoute><ReleaseReadiness /></ProtectedRoute>} />
             <Route path="/report/:id" element={<ProtectedRoute><Report /></ProtectedRoute>} />
             <Route path="/project/:id" element={<ProtectedRoute><ProjectDetail /></ProtectedRoute>} />
             <Route path="/vision-intake" element={<ProtectedRoute><VisionIntake /></ProtectedRoute>} />

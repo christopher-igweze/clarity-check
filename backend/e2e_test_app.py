@@ -25,6 +25,8 @@ def create_e2e_client() -> TestClient:
     @app.middleware("http")
     async def _inject_user(request, call_next):
         request.state.user_id = request.headers.get("X-Test-User", "e2e_default_user")
+        request.state.roles = ["admin"]
+        request.state.capabilities = ["*"]
         return await call_next(request)
 
     app.include_router(builds.router)
@@ -36,4 +38,3 @@ def create_e2e_client() -> TestClient:
 
 def reset_rate_limiter() -> None:
     limiter.reset()
-

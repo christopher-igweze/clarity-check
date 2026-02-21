@@ -5,12 +5,10 @@ import { Button } from "@/components/ui/button";
 import {
   abortBuildRun,
   bootstrapBuildRuntime,
-  getBuildRun,
   resumeBuildRun,
   streamBuildEvents,
   streamScanStatus,
   submitReplanDecision,
-  tickBuildRuntime,
 } from "@/lib/api";
 import { ScanSequence } from "@/components/ScanSequence";
 
@@ -34,7 +32,7 @@ const ScanLive = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const state = location.state as {
-    scanId: string;
+    scanId?: string;
     buildId?: string;
     repoUrl: string;
     quotaRemaining?: number | null;
@@ -47,7 +45,6 @@ const ScanLive = () => {
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(state?.quotaRemaining ?? null);
   const [reportId, setReportId] = useState<string | null>(state?.scanId ?? null);
   const [buildRunStatus, setBuildRunStatus] = useState<string>("running");
-  const [runtimeEpoch, setRuntimeEpoch] = useState(0);
   const terminalRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef(status);
 
@@ -93,7 +90,6 @@ const ScanLive = () => {
         type: "system",
         color: "text-muted-foreground",
       });
-      setRuntimeEpoch((value) => value + 1);
     } catch (err) {
       addLog({
         agent: "System",
@@ -215,32 +211,19 @@ const ScanLive = () => {
       (async () => {
         try {
           await bootstrapBuildRuntime(buildId);
-          for (let i = 0; i < 200 && !cancelled; i += 1) {
-            const stateResp = await getBuildRun(buildId);
-            setBuildRunStatus(stateResp.status);
-            if (["completed", "failed", "aborted"].includes(stateResp.status)) {
-              if (stateResp.status === "completed") {
-                setStatus("completed");
-              } else {
-                setStatus("error");
-              }
-              return;
-            }
-            const tick = await tickBuildRuntime(buildId);
-            if (tick.finished) {
-              setStatus("completed");
-              return;
-            }
-            await new Promise((resolve) => setTimeout(resolve, 350));
-          }
-        } catch (err) {
-          if (cancelled) return;
-          setStatus("error");
           addLog({
             agent: "System",
-            message: `Runtime tick failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+            message: "Runtime bootstrapped. Backend worker is driving orchestration.",
+            type: "system",
+            color: "text-muted-foreground",
+          });
+        } catch (err) {
+          if (cancelled) return;
+          addLog({
+            agent: "System",
+            message: `Runtime bootstrap warning: ${err instanceof Error ? err.message : "Unknown error"}`,
             type: "error",
-            color: "text-neon-red",
+            color: "text-neon-orange",
           });
         }
       })();
@@ -333,7 +316,7 @@ const ScanLive = () => {
     return () => {
       cancelled = true;
     };
-  }, [state?.scanId, state?.buildId, runtimeEpoch]);
+  }, [state?.scanId, state?.buildId]);
 
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">
