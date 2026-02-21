@@ -2,8 +2,8 @@
 
 Last updated: February 21, 2026  
 Repository: `/Users/christopher/Documents/AntiGravity/clarity-check`  
-Primary branch in progress: `codex/prod-hardening-phase1`  
-Active PR: https://github.com/christopher-igweze/clarity-check/pull/4
+Primary branch in progress: `staging`  
+Active PR: none (`#4` merged to `staging`)
 
 ## Purpose
 This is the canonical implementation status document for the production hardening + platform integration track.
@@ -99,6 +99,62 @@ Last verified on February 21, 2026:
 2. Frontend unit tests: `10 passed` (`npm run test`).
 3. Frontend production build: success (`npm run build`).
 
+## Staging Setup Contract (Redis + JWT)
+
+### Redis URL
+1. Production/staging must use TLS Redis URL format:
+`REDIS_URL=rediss://default:<token>@<host>:6379`
+2. Do not use plain `redis://` for hosted Redis providers.
+3. If a token is ever shared in chat/logs, rotate it immediately and update the environment secret.
+
+### Required Backend Flags
+1. `CONTROL_PLANE_USE_SUPABASE=true`
+2. `COORDINATION_FAIL_CLOSED=true`
+3. `ENFORCE_CAPABILITY_AUTH=true`
+4. `RUNTIME_WORKER_ENABLED=true`
+5. `REDIS_URL=<tls-redis-url>`
+
+### JWT Claim Contract
+Required claims:
+1. `sub` (stable user identifier).
+2. `aud` including `"authenticated"`.
+
+Role/capability claim inputs accepted by backend:
+1. Roles from: `role`, `roles`, `org_role`, `org_roles`, `app_metadata.role(s)`, `user_metadata.role(s)`.
+2. Capabilities from: `capabilities`, `permissions`, `org_permissions`, `app_metadata.capabilities/permissions`, `user_metadata.capabilities/permissions`.
+
+Recommended staging admin template:
+```json
+{
+  "sub": "{{user.id}}",
+  "aud": "authenticated",
+  "role": "authenticated",
+  "email": "{{user.primary_email_address}}",
+  "roles": ["admin"],
+  "capabilities": ["*"],
+  "app_metadata": {
+    "roles": ["admin"],
+    "capabilities": ["*"]
+  },
+  "user_metadata": {}
+}
+```
+
+Recommended staging operator template:
+```json
+{
+  "sub": "{{user.id}}",
+  "aud": "authenticated",
+  "role": "authenticated",
+  "email": "{{user.primary_email_address}}",
+  "roles": ["operator"],
+  "app_metadata": {
+    "roles": ["operator"]
+  },
+  "user_metadata": {}
+}
+```
+
 ## Delivered Work vs Production Criteria
 
 ### Criterion 1: No in-memory source-of-truth for critical state
@@ -139,7 +195,7 @@ Status: Partial
 `CONTROL_PLANE_USE_SUPABASE=true`, `COORDINATION_FAIL_CLOSED=true`, `ENFORCE_CAPABILITY_AUTH=true`, `REDIS_URL=...`.
 2. Apply latest migrations in staging/prod and verify table-level RLS behavior for new entities.
 3. Complete rollout runbooks: incident response, rollback command path, on-call playbook.
-4. Finalize auth claim mapping in production identity provider so capability enforcement is strict by default.
+4. Roll out JWT claim templates in identity provider and verify capability enforcement with at least one `admin` token and one `operator` token.
 
 ### P1 (Required for robust platform behavior)
 1. Implement planner policy layer for dynamic DAG selection and richer autonomous/deep-scan planning.
