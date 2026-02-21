@@ -1,12 +1,16 @@
-"""In-memory orchestration state store for Week 1 control-plane scaffolding."""
+"""Build orchestration state store with durable snapshot support."""
 
 from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
+import json
+import logging
+from pathlib import Path
 from typing import Any
 from uuid import UUID, uuid4
 
+from config import settings
 from models.builds import (
     BuildCheckpoint,
     BuildCreateRequest,
@@ -30,15 +34,59 @@ from models.builds import (
 )
 from orchestration.scheduler import compute_dag_levels
 from orchestration.telemetry import emit_orchestration_event
+from services.control_plane_state import load_state_snapshot, save_state_snapshot
+from services.control_plane_tables import (
+    load_build_store_entities,
+    save_build_store_entities,
+)
+
+logger = logging.getLogger(__name__)
 
 
-def _default_dag() -> list[DagNode]:
+def _autonomous_default_dag() -> list[DagNode]:
     return [
         DagNode(node_id="scanner", title="Static scan", agent="scanner", depends_on=[]),
-        DagNode(node_id="builder", title="Dynamic probe", agent="builder", depends_on=["scanner"]),
-        DagNode(node_id="security", title="Security review", agent="security", depends_on=["builder"]),
-        DagNode(node_id="planner", title="Remediation plan", agent="planner", depends_on=["security"]),
+        DagNode(
+            node_id="builder",
+            title="Dynamic probe",
+            agent="builder",
+            depends_on=["scanner"],
+            gate=GateType.test,
+        ),
+        DagNode(
+            node_id="security",
+            title="Security review",
+            agent="security",
+            depends_on=["builder"],
+            gate=GateType.policy,
+        ),
+        DagNode(
+            node_id="planner",
+            title="Remediation plan",
+            agent="planner",
+            depends_on=["security"],
+            gate=GateType.merge,
+        ),
     ]
+
+
+def _deterministic_default_dag() -> list[DagNode]:
+    return [
+        DagNode(node_id="deterministic-scan", title="Deterministic scan", agent="scanner", depends_on=[]),
+        DagNode(
+            node_id="deterministic-summary",
+            title="Deterministic summary",
+            agent="planner",
+            depends_on=["deterministic-scan"],
+        ),
+    ]
+
+
+def _resolve_default_dag(metadata: dict[str, Any]) -> tuple[list[DagNode], str]:
+    raw_mode = str(metadata.get("scan_mode") or "autonomous").strip().lower()
+    if raw_mode in {"deterministic", "tier1", "free"}:
+        return _deterministic_default_dag(), "deterministic"
+    return _autonomous_default_dag(), "autonomous"
 
 
 _VALID_STATUS_TRANSITIONS: dict[BuildStatus, set[BuildStatus]] = {
@@ -57,19 +105,28 @@ _VALID_STATUS_TRANSITIONS: dict[BuildStatus, set[BuildStatus]] = {
 
 
 class BuildStore:
-    def __init__(self) -> None:
+    def __init__(self, *, state_path: str | None = None) -> None:
         self._lock = asyncio.Lock()
         self._builds: dict[UUID, BuildRun] = {}
         self._events: dict[UUID, list[BuildEvent]] = defaultdict(list)
         self._checkpoints: dict[UUID, list[BuildCheckpoint]] = defaultdict(list)
+        resolved_path = state_path if state_path is not None else settings.build_store_state_path
+        self._state_path = Path(resolved_path).expanduser() if resolved_path else None
+        self._state_key = "build_store"
+        self._load_state()
 
     async def create_build(self, *, user_id: str, request: BuildCreateRequest) -> BuildRun:
         async with self._lock:
             build_id = uuid4()
             now = utc_now()
-            dag = request.dag or _default_dag()
-            dag_levels = compute_dag_levels(dag)
             metadata = dict(request.metadata)
+            if request.dag is not None:
+                dag = request.dag
+                scan_mode = str(metadata.get("scan_mode") or "custom").strip().lower()
+            else:
+                dag, scan_mode = _resolve_default_dag(metadata)
+            metadata["scan_mode"] = scan_mode
+            dag_levels = compute_dag_levels(dag)
             metadata["dag_levels"] = dag_levels
             metadata["level_cursor"] = 0
             build = BuildRun(
@@ -97,6 +154,7 @@ class BuildStore:
                     payload={
                         "repo_url": request.repo_url,
                         "objective": request.objective,
+                        "scan_mode": metadata.get("scan_mode"),
                         "dag_nodes": [node.node_id for node in build.dag],
                     },
                 )
@@ -125,6 +183,7 @@ class BuildStore:
                 build_id=str(build_id),
                 data={"repo_url": request.repo_url, "objective": request.objective},
             )
+            self._save_state_unlocked()
             return build
 
     async def get_build(self, build_id: UUID) -> BuildRun | None:
@@ -145,7 +204,7 @@ class BuildStore:
             if status is not None:
                 rows = [row for row in rows if row.status == status]
             rows.sort(key=lambda row: row.created_at, reverse=True)
-            rows = rows[: max(1, min(limit, 100))]
+            rows = rows[: max(1, min(limit, 5000))]
             return [
                 BuildRunSummary(
                     build_id=row.build_id,
@@ -164,6 +223,16 @@ class BuildStore:
                 )
                 for row in rows
             ]
+
+    async def list_running_build_ids(self) -> list[UUID]:
+        async with self._lock:
+            rows = [
+                row
+                for row in self._builds.values()
+                if row.status == BuildStatus.running
+            ]
+            rows.sort(key=lambda row: row.created_at)
+            return [row.build_id for row in rows]
 
     async def resume_build(self, build_id: UUID, *, reason: str | None = None) -> BuildRun:
         async with self._lock:
@@ -200,6 +269,7 @@ class BuildStore:
                 build_id=str(build_id),
                 data={"reason": reason or "manual_resume"},
             )
+            self._save_state_unlocked()
             return build
 
     async def abort_build(self, build_id: UUID, *, reason: str | None = None) -> BuildRun:
@@ -244,6 +314,7 @@ class BuildStore:
                 build_id=str(build_id),
                 data={"reason": reason or "manual_abort"},
             )
+            self._save_state_unlocked()
             return build
 
     async def complete_build(self, build_id: UUID, *, reason: str = "runtime_completed") -> BuildRun:
@@ -284,6 +355,7 @@ class BuildStore:
                 build_id=str(build_id),
                 data={"reason": reason},
             )
+            self._save_state_unlocked()
             return build
 
     async def fail_build(self, build_id: UUID, *, reason: str = "runtime_failed") -> BuildRun:
@@ -324,6 +396,7 @@ class BuildStore:
                 build_id=str(build_id),
                 data={"reason": reason},
             )
+            self._save_state_unlocked()
             return build
 
     async def start_task_run(
@@ -374,6 +447,7 @@ class BuildStore:
                 node_id=node_id,
                 data={"task_run_id": str(task_run.task_run_id), "attempt": task_run.attempt},
             )
+            self._save_state_unlocked()
             return task_run
 
     async def finish_task_run(
@@ -438,6 +512,7 @@ class BuildStore:
                     "attempt": task_run.attempt,
                 },
             )
+            self._save_state_unlocked()
             return task_run
 
     async def complete_task_run(
@@ -556,6 +631,7 @@ class BuildStore:
                             payload={"final_status": BuildStatus.failed.value},
                         )
                     )
+            self._save_state_unlocked()
             return decision
 
     async def list_gate_decisions(
@@ -650,6 +726,7 @@ class BuildStore:
                     "source": source,
                 },
             )
+            self._save_state_unlocked()
             return decision
 
     async def list_replan_decisions(
@@ -741,6 +818,7 @@ class BuildStore:
                     },
                 )
             )
+            self._save_state_unlocked()
             return suggestion
 
     async def apply_suggested_replan(
@@ -793,6 +871,7 @@ class BuildStore:
                     },
                 )
             )
+            self._save_state_unlocked()
             return item
 
     async def list_debt_items(
@@ -858,6 +937,7 @@ class BuildStore:
                         payload={"final_status": BuildStatus.failed.value},
                     )
                 )
+            self._save_state_unlocked()
             return violation
 
     async def list_policy_violations(
@@ -894,6 +974,7 @@ class BuildStore:
                 reason=reason,
                 status=build.status,
             )
+            self._save_state_unlocked()
             return checkpoint
 
     async def list_checkpoints(self, build_id: UUID) -> list[BuildCheckpoint]:
@@ -921,6 +1002,73 @@ class BuildStore:
                     payload=payload or {},
                 )
             )
+            self._save_state_unlocked()
+
+    async def apply_scan_mode_fallback(
+        self,
+        build_id: UUID,
+        *,
+        to_mode: str,
+        reason: str,
+        source: str = "runtime_tick",
+    ) -> BuildRun | None:
+        async with self._lock:
+            build = self._builds.get(build_id)
+            if build is None:
+                raise KeyError("build_not_found")
+
+            current_mode = str(build.metadata.get("scan_mode") or "autonomous").strip().lower()
+            target_mode = to_mode.strip().lower()
+            fallback_mode = str(build.metadata.get("fallback_scan_mode") or "").strip().lower()
+            fallback_applied = bool(build.metadata.get("fallback_applied"))
+
+            if fallback_applied:
+                return None
+            if fallback_mode != target_mode:
+                return None
+            if current_mode == target_mode:
+                return None
+            if target_mode != "deterministic":
+                return None
+
+            fallback_metadata = dict(build.metadata)
+            fallback_metadata["scan_mode"] = target_mode
+            fallback_metadata["fallback_applied"] = True
+            fallback_metadata["fallback_from_mode"] = current_mode
+            fallback_metadata["fallback_reason"] = reason
+
+            fallback_dag = _deterministic_default_dag()
+            build.dag = fallback_dag
+            build.metadata = fallback_metadata
+            self._refresh_dag_levels_unlocked(build)
+            build.metadata["level_cursor"] = 0
+            build.updated_at = utc_now()
+
+            self._append_event_unlocked(
+                BuildEvent(
+                    event_type="FALLBACK_MODE_SWITCHED",
+                    build_id=build_id,
+                    payload={
+                        "from_mode": current_mode,
+                        "to_mode": target_mode,
+                        "reason": reason,
+                        "source": source,
+                        "dag_nodes": [node.node_id for node in fallback_dag],
+                    },
+                )
+            )
+            emit_orchestration_event(
+                event="fallback_mode_switched",
+                build_id=str(build_id),
+                data={
+                    "from_mode": current_mode,
+                    "to_mode": target_mode,
+                    "reason": reason,
+                    "source": source,
+                },
+            )
+            self._save_state_unlocked()
+            return build
 
     def _append_event_unlocked(self, event: BuildEvent) -> None:
         self._events[event.build_id].append(event)
@@ -1083,6 +1231,123 @@ class BuildStore:
             },
         )
         return transition
+
+    def _load_state(self) -> None:
+        payload: dict[str, Any] | None = None
+        try:
+            asyncio.get_running_loop()
+            loop_running = True
+        except RuntimeError:
+            loop_running = False
+
+        if not loop_running:
+            try:
+                payload = asyncio.run(load_build_store_entities())
+            except Exception:
+                logger.warning("Failed to load build store entities from normalized tables.")
+                payload = None
+            if payload is None:
+                try:
+                    payload = asyncio.run(load_state_snapshot(self._state_key))
+                except Exception:
+                    logger.warning("Failed to load build store snapshot from Supabase.")
+                    payload = None
+
+        if payload is None and self._state_path and self._state_path.exists():
+            try:
+                payload = json.loads(self._state_path.read_text())
+            except Exception:
+                logger.warning("Failed to load build store snapshot from local state file.")
+                payload = None
+
+        if not isinstance(payload, dict):
+            return
+
+        builds_raw = payload.get("builds") or {}
+        events_raw = payload.get("events") or {}
+        checkpoints_raw = payload.get("checkpoints") or {}
+
+        loaded_builds: dict[UUID, BuildRun] = {}
+        loaded_events: dict[UUID, list[BuildEvent]] = {}
+        loaded_checkpoints: dict[UUID, list[BuildCheckpoint]] = {}
+
+        for build_key, build_payload in builds_raw.items():
+            try:
+                build = BuildRun.model_validate(build_payload)
+                build_id = UUID(str(build_key))
+                loaded_builds[build_id] = build
+            except Exception:
+                continue
+
+        for build_key, rows in events_raw.items():
+            try:
+                build_id = UUID(str(build_key))
+            except Exception:
+                continue
+            parsed: list[BuildEvent] = []
+            if isinstance(rows, list):
+                for row in rows:
+                    try:
+                        parsed.append(BuildEvent.model_validate(row))
+                    except Exception:
+                        continue
+            loaded_events[build_id] = parsed
+
+        for build_key, rows in checkpoints_raw.items():
+            try:
+                build_id = UUID(str(build_key))
+            except Exception:
+                continue
+            parsed: list[BuildCheckpoint] = []
+            if isinstance(rows, list):
+                for row in rows:
+                    try:
+                        parsed.append(BuildCheckpoint.model_validate(row))
+                    except Exception:
+                        continue
+            loaded_checkpoints[build_id] = parsed
+
+        self._builds = loaded_builds
+        self._events = defaultdict(list, loaded_events)
+        self._checkpoints = defaultdict(list, loaded_checkpoints)
+
+    def _save_state_unlocked(self) -> None:
+        payload = self._serialize_state_unlocked()
+
+        if self._state_path:
+            self._state_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = self._state_path.with_suffix(f"{self._state_path.suffix}.tmp")
+            tmp_path.write_text(json.dumps(payload))
+            tmp_path.replace(self._state_path)
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(save_state_snapshot(self._state_key, payload))
+            loop.create_task(save_build_store_entities(payload))
+        except RuntimeError:
+            try:
+                asyncio.run(save_state_snapshot(self._state_key, payload))
+                asyncio.run(save_build_store_entities(payload))
+            except Exception:
+                logger.warning("Failed to save build store snapshot to Supabase.")
+        except Exception:
+            logger.warning("Failed to enqueue build store snapshot save.")
+
+    def _serialize_state_unlocked(self) -> dict[str, Any]:
+        return {
+            "builds": {
+                str(build_id): build.model_dump(mode="json")
+                for build_id, build in self._builds.items()
+            },
+            "events": {
+                str(build_id): [event.model_dump(mode="json") for event in rows]
+                for build_id, rows in self._events.items()
+            },
+            "checkpoints": {
+                str(build_id): [row.model_dump(mode="json") for row in rows]
+                for build_id, rows in self._checkpoints.items()
+            },
+        }
 
 
 build_store = BuildStore()

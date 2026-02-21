@@ -1,5 +1,5 @@
 import { useAuth } from "@/contexts/AuthContext";
-import { Shield, LogOut, FolderGit2, Plus, ExternalLink, Clock, BarChart3, Settings, Wrench } from "lucide-react";
+import { Shield, LogOut, FolderGit2, Plus, ExternalLink, Clock, BarChart3, Settings, Wrench, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
@@ -112,6 +112,10 @@ const Dashboard = () => {
                 Free reports left: {limits.reports_remaining}/{limits.reports_limit}
               </Badge>
             )}
+            <Button variant="outline" onClick={() => navigate("/release-readiness")}>
+              <ShieldCheck className="w-4 h-4 mr-2" />
+              Release Readiness
+            </Button>
             <Button variant="outline" onClick={() => navigate("/program-ops")}>
               <Wrench className="w-4 h-4 mr-2" />
               Program Ops

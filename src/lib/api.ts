@@ -4,7 +4,7 @@ const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:800
 const API_URL = `${API_BASE_URL}/api`;
 export const TIER1_ENABLED = String(import.meta.env.VITE_TIER1_ENABLED ?? "true").toLowerCase() !== "false";
 export const BUILD_CONTROL_PLANE_ENABLED =
-  String(import.meta.env.VITE_BUILD_CONTROL_PLANE_ENABLED ?? "false").toLowerCase() === "true";
+  String(import.meta.env.VITE_BUILD_CONTROL_PLANE_ENABLED ?? "true").toLowerCase() === "true";
 
 type StreamCallback = (text: string) => void;
 type ApiError = Error & { code?: string; status?: number; payload?: unknown };
@@ -459,9 +459,11 @@ export async function streamVisionIntake({
 export async function createBuildRun({
   repoUrl,
   objective,
+  metadata,
 }: {
   repoUrl: string;
   objective: string;
+  metadata?: Record<string, unknown>;
 }): Promise<BuildRunResponse> {
   const resp = await fetch(`${API_BASE_URL}/v1/builds`, {
     method: "POST",
@@ -469,6 +471,7 @@ export async function createBuildRun({
     body: JSON.stringify({
       repo_url: repoUrl,
       objective,
+      metadata: metadata || {},
     }),
   });
   if (!resp.ok) {
@@ -557,7 +560,9 @@ export async function submitReplanDecision({
   return (await resp.json()) as ReplanDecisionResponse;
 }
 
-export async function bootstrapBuildRuntime(buildId: string): Promise<{ runtimeId: string }> {
+export async function bootstrapBuildRuntime(
+  buildId: string,
+): Promise<{ runtimeId: string; runtimeWorkerEnabled: boolean }> {
   const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}/runtime/bootstrap`, {
     method: "POST",
     headers: await getAuthHeaders(),
@@ -566,7 +571,11 @@ export async function bootstrapBuildRuntime(buildId: string): Promise<{ runtimeI
     throw await toApiError(resp, "Failed to bootstrap runtime");
   }
   const data = await resp.json();
-  return { runtimeId: data.runtime_id as string };
+  const metadata = (data.metadata || {}) as Record<string, unknown>;
+  return {
+    runtimeId: data.runtime_id as string,
+    runtimeWorkerEnabled: Boolean(metadata.runtime_worker_enabled ?? true),
+  };
 }
 
 export async function tickBuildRuntime(buildId: string): Promise<BuildRuntimeTick> {
@@ -749,7 +758,7 @@ export async function createValidationCampaign({
   repos: string[];
   runsPerRepo: number;
 }): Promise<ProgramCampaign> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week7/campaigns`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/campaigns`, {
     method: "POST",
     headers: await getAuthHeaders(),
     body: JSON.stringify({
@@ -765,7 +774,7 @@ export async function createValidationCampaign({
 }
 
 export async function getValidationCampaign(campaignId: string): Promise<ProgramCampaign> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week7/campaigns/${campaignId}`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/campaigns/${campaignId}`, {
     method: "GET",
     headers: {
       Authorization: (await getAuthHeaders()).Authorization,
@@ -794,7 +803,7 @@ export async function ingestCampaignRun({
   durationMs: number;
   findingsTotal?: number;
 }): Promise<{ status: string; run_id: string }> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week8/campaigns/${campaignId}/runs`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/campaigns/${campaignId}/runs`, {
     method: "POST",
     headers: await getAuthHeaders(),
     body: JSON.stringify({
@@ -813,7 +822,7 @@ export async function ingestCampaignRun({
 }
 
 export async function getCampaignReport(campaignId: string): Promise<ProgramCampaignReport> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week8/campaigns/${campaignId}/report`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/campaigns/${campaignId}/report`, {
     method: "GET",
     headers: {
       Authorization: (await getAuthHeaders()).Authorization,
@@ -834,7 +843,7 @@ export async function createPolicyProfile({
   blockedCommands: string[];
   restrictedPaths: string[];
 }): Promise<ProgramPolicyProfile> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week9/policy-profiles`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/policy-profiles`, {
     method: "POST",
     headers: await getAuthHeaders(),
     body: JSON.stringify({
@@ -860,7 +869,7 @@ export async function evaluatePolicyCheck({
   path?: string;
   buildId?: string;
 }): Promise<ProgramPolicyResult> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week9/policy-check`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/policy-check`, {
     method: "POST",
     headers: await getAuthHeaders(),
     body: JSON.stringify({
@@ -883,7 +892,7 @@ export async function createProgramSecret({
   name: string;
   value: string;
 }): Promise<ProgramSecretRef> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week10/secrets`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/secrets`, {
     method: "POST",
     headers: await getAuthHeaders(),
     body: JSON.stringify({ name, value }),
@@ -895,7 +904,7 @@ export async function createProgramSecret({
 }
 
 export async function listProgramSecrets(): Promise<ProgramSecretRef[]> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week10/secrets`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/secrets`, {
     method: "GET",
     headers: {
       Authorization: (await getAuthHeaders()).Authorization,
@@ -908,7 +917,7 @@ export async function listProgramSecrets(): Promise<ProgramSecretRef[]> {
 }
 
 export async function getProgramSecretMetadata(secretId: string): Promise<ProgramSecretMetadata> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week10/secrets/${secretId}`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/secrets/${secretId}`, {
     method: "GET",
     headers: {
       Authorization: (await getAuthHeaders()).Authorization,
@@ -963,7 +972,7 @@ export async function getProgramSloSummary(): Promise<{
   success_rate: number;
   mean_cycle_seconds: number;
 }> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week13/slo-summary`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/slo-summary`, {
     method: "GET",
     headers: {
       Authorization: (await getAuthHeaders()).Authorization,
@@ -998,7 +1007,7 @@ export async function upsertReleaseChecklist(payload: {
   docs_complete: boolean;
   runbooks_ready: boolean;
 }> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week14/checklist`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/checklist`, {
     method: "POST",
     headers: await getAuthHeaders(),
     body: JSON.stringify({
@@ -1034,7 +1043,7 @@ export async function upsertRollbackDrill(payload: {
   duration_minutes: number;
   issues_found: string[];
 }> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week15/rollback-drills`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/rollback-drills`, {
     method: "POST",
     headers: await getAuthHeaders(),
     body: JSON.stringify({
@@ -1063,7 +1072,7 @@ export async function decideGoLive(payload: {
   status: "GO" | "NO_GO";
   reasons: string[];
 }> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week16/go-live-decision`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/go-live-decision`, {
     method: "POST",
     headers: await getAuthHeaders(),
     body: JSON.stringify({

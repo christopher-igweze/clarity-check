@@ -6,6 +6,7 @@ import asyncio
 import base64
 import hmac
 import json
+import logging
 import time
 from hashlib import sha256
 from pathlib import Path
@@ -43,6 +44,14 @@ from models.program import (
 from orchestration.benchmark_harness import ValidationBenchmarkReport, compile_benchmark_report
 from orchestration.store import build_store
 from orchestration.validation import ValidationRun
+from services.control_plane_state import load_state_snapshot, save_state_snapshot
+from services.control_plane_tables import (
+    load_program_store_entities,
+    save_program_store_entities,
+)
+from services.ephemeral_coordination import ephemeral_coordinator
+
+logger = logging.getLogger(__name__)
 
 
 class ProgramStore:
@@ -59,10 +68,11 @@ class ProgramStore:
         self._go_live_decisions: dict[str, GoLiveDecision] = {}
         self._fernet = Fernet(self._fernet_key_from_secret(settings.supabase_jwt_secret))
         self._platform_secret = settings.supabase_jwt_secret.encode("utf-8")
-        self._state_path = Path(state_path).expanduser() if state_path else None
+        resolved_state_path = state_path if state_path is not None else settings.program_store_state_path
+        self._state_path = Path(resolved_state_path).expanduser() if resolved_state_path else None
+        self._state_key = "program_store"
         self._idempotency_ttl_seconds = max(60, int(settings.idempotency_ttl_seconds))
-        if self._state_path:
-            self._load_state()
+        self._load_state()
 
     async def create_campaign(
         self,
@@ -236,15 +246,16 @@ class ProgramStore:
         if not hmac.compare_digest(expected, signature):
             raise ValueError("signature_invalid")
 
+        claimed = await ephemeral_coordinator.claim_nonce(nonce, ttl_seconds=replay_window)
+        if not claimed:
+            raise ValueError("nonce_replay_detected")
+
         async with self._lock:
             expired = [
                 key for key, seen_ts in self._seen_nonces.items() if (now_ts - seen_ts) > replay_window
             ]
             for key in expired:
                 self._seen_nonces.pop(key, None)
-
-            if nonce in self._seen_nonces:
-                raise ValueError("nonce_replay_detected")
             self._seen_nonces[nonce] = now_ts
             self._save_state_unlocked()
 
@@ -260,6 +271,23 @@ class ProgramStore:
         key = (build_id, idempotency_key.strip())
         if not key[1]:
             raise ValueError("idempotency_key_required")
+        coord_key = f"{build_id}:{key[1]}"
+        build = await build_store.get_build(build_id)
+        if build is None:
+            raise KeyError("build_not_found")
+
+        cached_distributed = await ephemeral_coordinator.get_idempotency(
+            coord_key,
+            ttl_seconds=self._idempotency_ttl_seconds,
+        )
+        if cached_distributed is not None:
+            checkpoint = BuildCheckpoint.model_validate(cached_distributed["checkpoint"])
+            return IdempotentCheckpointResult(
+                checkpoint_id=checkpoint.checkpoint_id,
+                replayed=True,
+                status=checkpoint.status.value,
+                reason=checkpoint.reason,
+            )
 
         async with self._lock:
             self._prune_idempotency_unlocked()
@@ -275,11 +303,18 @@ class ProgramStore:
 
         checkpoint = await build_store.create_checkpoint(build_id, reason=reason)
         async with self._lock:
-            self._idempotent_checkpoints[key] = {
+            cached_payload = {
                 "created_ts": int(time.time()),
+                "user_id": build.created_by,
                 "checkpoint": checkpoint.model_dump(mode="json"),
             }
+            self._idempotent_checkpoints[key] = cached_payload
             self._save_state_unlocked()
+        await ephemeral_coordinator.set_idempotency(
+            coord_key,
+            payload=cached_payload,
+            ttl_seconds=self._idempotency_ttl_seconds,
+        )
         return IdempotentCheckpointResult(
             checkpoint_id=checkpoint.checkpoint_id,
             replayed=False,
@@ -407,11 +442,37 @@ class ProgramStore:
             return self._go_live_decisions.get(release_id)
 
     def _load_state(self) -> None:
-        if self._state_path is None or not self._state_path.exists():
-            return
+        raw: dict[str, Any] | None = None
         try:
-            raw = json.loads(self._state_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+            asyncio.get_running_loop()
+            loop_running = True
+        except RuntimeError:
+            loop_running = False
+
+        if not loop_running:
+            try:
+                loaded = asyncio.run(load_program_store_entities())
+                if isinstance(loaded, dict):
+                    raw = loaded
+            except Exception:
+                logger.warning("Failed loading program store entities from normalized tables.")
+            if raw is None:
+                try:
+                    loaded_snapshot = asyncio.run(load_state_snapshot(self._state_key))
+                    if isinstance(loaded_snapshot, dict):
+                        raw = loaded_snapshot
+                except Exception:
+                    logger.warning("Failed loading program store snapshot from Supabase.")
+
+        if raw is None and self._state_path and self._state_path.exists():
+            try:
+                loaded_file = json.loads(self._state_path.read_text(encoding="utf-8"))
+                if isinstance(loaded_file, dict):
+                    raw = loaded_file
+            except (json.JSONDecodeError, OSError):
+                raw = None
+
+        if raw is None:
             return
         if not isinstance(raw, dict):
             return
@@ -491,10 +552,12 @@ class ProgramStore:
                     continue
                 checkpoint_raw = value.get("checkpoint")
                 created_ts = value.get("created_ts", 0)
+                user_id = value.get("user_id")
                 if not isinstance(checkpoint_raw, dict) or not isinstance(created_ts, int):
                     continue
                 self._idempotent_checkpoints[(build_id, idem_key)] = {
                     "created_ts": created_ts,
+                    "user_id": user_id if isinstance(user_id, str) else None,
                     "checkpoint": checkpoint_raw,
                 }
 
@@ -528,17 +591,29 @@ class ProgramStore:
         self._prune_idempotency_unlocked()
 
     def _save_state_unlocked(self) -> None:
-        if self._state_path is None:
-            return
         payload = self._serialize_state_unlocked()
+        if self._state_path is not None:
+            try:
+                parent = self._state_path.parent
+                parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = self._state_path.with_suffix(f"{self._state_path.suffix}.tmp")
+                tmp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+                tmp_path.replace(self._state_path)
+            except OSError:
+                logger.warning("Failed writing local program store snapshot.")
+
         try:
-            parent = self._state_path.parent
-            parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = self._state_path.with_suffix(f"{self._state_path.suffix}.tmp")
-            tmp_path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-            tmp_path.replace(self._state_path)
-        except OSError:
-            return
+            loop = asyncio.get_running_loop()
+            loop.create_task(save_state_snapshot(self._state_key, payload))
+            loop.create_task(save_program_store_entities(payload))
+        except RuntimeError:
+            try:
+                asyncio.run(save_state_snapshot(self._state_key, payload))
+                asyncio.run(save_program_store_entities(payload))
+            except Exception:
+                logger.warning("Failed writing program store snapshot to Supabase.")
+        except Exception:
+            logger.warning("Failed enqueuing program store snapshot persistence.")
 
     def _serialize_state_unlocked(self) -> dict[str, Any]:
         campaigns = {

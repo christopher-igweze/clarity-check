@@ -229,7 +229,7 @@ const ProgramOps = () => {
 
       <main className="relative z-10 max-w-5xl mx-auto px-6 pb-20 space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-3xl font-bold">Program Ops (Weeks 7-16)</h1>
+          <h1 className="text-3xl font-bold">Advanced Program Ops</h1>
           {validationBadge}
         </div>
         {error && <div className="text-sm text-destructive">{error}</div>}
@@ -348,4 +348,3 @@ const ProgramOps = () => {
 };
 
 export default ProgramOps;
-

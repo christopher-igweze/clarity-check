@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import {
   abortBuildRun,
   bootstrapBuildRuntime,
-  getBuildRun,
   resumeBuildRun,
   streamBuildEvents,
   streamScanStatus,
@@ -34,7 +33,7 @@ const ScanLive = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const state = location.state as {
-    scanId: string;
+    scanId?: string;
     buildId?: string;
     repoUrl: string;
     quotaRemaining?: number | null;
@@ -47,9 +46,9 @@ const ScanLive = () => {
   const [quotaRemaining, setQuotaRemaining] = useState<number | null>(state?.quotaRemaining ?? null);
   const [reportId, setReportId] = useState<string | null>(state?.scanId ?? null);
   const [buildRunStatus, setBuildRunStatus] = useState<string>("running");
-  const [runtimeEpoch, setRuntimeEpoch] = useState(0);
   const terminalRef = useRef<HTMLDivElement>(null);
   const statusRef = useRef(status);
+  const lastBuildEventAtRef = useRef<number>(Date.now());
 
   useEffect(() => {
     statusRef.current = status;
@@ -93,7 +92,6 @@ const ScanLive = () => {
         type: "system",
         color: "text-muted-foreground",
       });
-      setRuntimeEpoch((value) => value + 1);
     } catch (err) {
       addLog({
         agent: "System",
@@ -150,6 +148,7 @@ const ScanLive = () => {
 
     if (state?.buildId) {
       const buildId = state.buildId;
+      lastBuildEventAtRef.current = Date.now();
       addLog({
         agent: "System",
         message: `Connected to build ${buildId}. Running control-plane orchestration...`,
@@ -161,6 +160,7 @@ const ScanLive = () => {
         buildId,
         onEvent: ({ event, payload }) => {
           if (cancelled) return;
+          lastBuildEventAtRef.current = Date.now();
           const data = payload.payload || {};
           const message =
             payload.message ||
@@ -214,33 +214,77 @@ const ScanLive = () => {
 
       (async () => {
         try {
-          await bootstrapBuildRuntime(buildId);
-          for (let i = 0; i < 200 && !cancelled; i += 1) {
-            const stateResp = await getBuildRun(buildId);
-            setBuildRunStatus(stateResp.status);
-            if (["completed", "failed", "aborted"].includes(stateResp.status)) {
-              if (stateResp.status === "completed") {
-                setStatus("completed");
-              } else {
-                setStatus("error");
+          const { runtimeWorkerEnabled } = await bootstrapBuildRuntime(buildId);
+          if (!runtimeWorkerEnabled) {
+            addLog({
+              agent: "System",
+              message:
+                "Runtime bootstrapped. Backend worker is disabled, so this page is running tick fallback mode.",
+              type: "system",
+              color: "text-neon-orange",
+            });
+            while (!cancelled && statusRef.current === "scanning") {
+              try {
+                const tick = await tickBuildRuntime(buildId);
+                lastBuildEventAtRef.current = Date.now();
+                if (tick.finished) {
+                  break;
+                }
+              } catch (tickErr) {
+                if (cancelled) return;
+                addLog({
+                  agent: "System",
+                  message: `Fallback tick failed: ${tickErr instanceof Error ? tickErr.message : "Unknown error"}`,
+                  type: "error",
+                  color: "text-neon-red",
+                });
+                break;
               }
-              return;
+              await new Promise((resolve) => setTimeout(resolve, 1200));
             }
-            const tick = await tickBuildRuntime(buildId);
-            if (tick.finished) {
-              setStatus("completed");
-              return;
+            return;
+          }
+
+          addLog({
+            agent: "System",
+            message: "Runtime bootstrapped. Backend worker is driving orchestration.",
+            type: "system",
+            color: "text-muted-foreground",
+          });
+          while (!cancelled && statusRef.current === "scanning") {
+            await new Promise((resolve) => setTimeout(resolve, 5000));
+            if (cancelled || statusRef.current !== "scanning") {
+              break;
             }
-            await new Promise((resolve) => setTimeout(resolve, 350));
+            if (Date.now() - lastBuildEventAtRef.current < 10000) {
+              continue;
+            }
+            try {
+              await tickBuildRuntime(buildId);
+              lastBuildEventAtRef.current = Date.now();
+              addLog({
+                agent: "System",
+                message: "Worker heartbeat gap detected. Sent a runtime tick safety nudge.",
+                type: "system",
+                color: "text-neon-orange",
+              });
+            } catch (tickErr) {
+              if (cancelled) return;
+              addLog({
+                agent: "System",
+                message: `Worker watchdog tick warning: ${tickErr instanceof Error ? tickErr.message : "Unknown error"}`,
+                type: "error",
+                color: "text-neon-orange",
+              });
+            }
           }
         } catch (err) {
           if (cancelled) return;
-          setStatus("error");
           addLog({
             agent: "System",
-            message: `Runtime tick failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+            message: `Runtime bootstrap warning: ${err instanceof Error ? err.message : "Unknown error"}`,
             type: "error",
-            color: "text-neon-red",
+            color: "text-neon-orange",
           });
         }
       })();
@@ -333,7 +377,7 @@ const ScanLive = () => {
     return () => {
       cancelled = true;
     };
-  }, [state?.scanId, state?.buildId, runtimeEpoch]);
+  }, [state?.scanId, state?.buildId]);
 
   return (
     <div className="min-h-screen bg-background relative overflow-hidden">

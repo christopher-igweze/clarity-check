@@ -33,6 +33,7 @@ from api.routes import (
     program,
 )
 from config import settings
+from orchestration.runtime_worker import RuntimeWorker
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,6 +41,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%dT%H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+runtime_worker = RuntimeWorker(poll_seconds=settings.runtime_worker_poll_seconds)
 
 
 @asynccontextmanager
@@ -47,7 +49,13 @@ async def lifespan(app: FastAPI):
     logger.info("Clarity Check API starting up...")
     if settings.tier1_enabled:
         await audit.cleanup_tier1_expired()
+    if settings.runtime_worker_enabled:
+        runtime_worker.start()
+        logger.info("Runtime worker started.")
     yield
+    if settings.runtime_worker_enabled:
+        await runtime_worker.stop()
+        logger.info("Runtime worker stopped.")
     logger.info("Clarity Check API shutting down.")
 
 

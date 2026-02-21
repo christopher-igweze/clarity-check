@@ -7,6 +7,7 @@ import unittest
 from uuid import uuid4
 
 from e2e_test_app import create_e2e_client, reset_rate_limiter
+from config import settings
 from orchestration.program_store import program_store
 
 
@@ -72,7 +73,35 @@ class Week11E2ETests(unittest.TestCase):
         self.assertEqual(stale_resp.status_code, 401)
         self.assertEqual(stale_resp.json()["detail"]["code"], "webhook_timestamp_invalid")
 
+    def test_webhook_fails_closed_when_coordination_unavailable(self) -> None:
+        original = settings.coordination_fail_closed
+        settings.coordination_fail_closed = True
+        try:
+            user = f"week11-user-{uuid4()}"
+            body = b'{"event":"build.completed","release":"r1"}'
+            nonce = f"nonce-{uuid4()}"
+            timestamp = int(time.time())
+            signature = program_store.build_platform_signature(
+                timestamp=timestamp,
+                nonce=nonce,
+                body=body,
+            )
+            resp = self.client.post(
+                "/v1/program/week11/webhook/ingest",
+                content=body,
+                headers={
+                    "X-Test-User": user,
+                    "X-Platform-Nonce": nonce,
+                    "X-Platform-Timestamp": str(timestamp),
+                    "X-Platform-Signature": signature,
+                    "Content-Type": "application/json",
+                },
+            )
+            self.assertEqual(resp.status_code, 503)
+            self.assertEqual(resp.json()["detail"]["code"], "coordination_unavailable")
+        finally:
+            settings.coordination_fail_closed = original
+
 
 if __name__ == "__main__":
     unittest.main()
-

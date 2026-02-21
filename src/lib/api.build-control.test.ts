@@ -35,6 +35,7 @@ describe("build control-plane api", () => {
     const result = await createBuildRun({
       repoUrl: "https://github.com/octocat/Hello-World",
       objective: "run orchestration",
+      metadata: { scan_mode: "autonomous" },
     });
 
     expect(result).toEqual({ buildId: "build-123", status: "running" });
@@ -43,6 +44,8 @@ describe("build control-plane api", () => {
     const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
     expect(init.method).toBe("POST");
     expect(init.headers).toMatchObject({ Authorization: "Bearer test-token" });
+    const body = JSON.parse(String(init.body));
+    expect(body.metadata.scan_mode).toBe("autonomous");
   });
 
   it("streams and parses build SSE events", async () => {

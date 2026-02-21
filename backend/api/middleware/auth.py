@@ -12,6 +12,7 @@ from fastapi import Request, HTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response
 
+from api.middleware.authorization import derive_roles_and_capabilities
 from config import settings
 
 # Paths that don't require authentication
@@ -45,6 +46,9 @@ class SupabaseAuthMiddleware(BaseHTTPMiddleware):
                 audience="authenticated",
             )
             request.state.user_id = payload["sub"]
+            roles, capabilities = derive_roles_and_capabilities(payload)
+            request.state.roles = roles
+            request.state.capabilities = capabilities
         except jwt.ExpiredSignatureError:
             raise HTTPException(status_code=401, detail="Token expired")
         except jwt.InvalidTokenError as exc:

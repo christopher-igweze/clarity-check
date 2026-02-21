@@ -396,6 +396,21 @@ class BuildRouteTests(unittest.TestCase):
         self.assertEqual(build_resp.status_code, 200)
         self.assertEqual(build_resp.json()["status"], "aborted")
 
+    def test_scan_mode_selects_deterministic_default_dag(self) -> None:
+        resp = self.client.post(
+            "/v1/builds",
+            json={
+                "repo_url": "https://github.com/octocat/Hello-World",
+                "objective": "deterministic dag selection",
+                "metadata": {"scan_mode": "deterministic"},
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        payload = resp.json()
+        node_ids = [row["node_id"] for row in payload["dag"]]
+        self.assertIn("deterministic-scan", node_ids)
+        self.assertEqual(payload["metadata"]["scan_mode"], "deterministic")
+
 
 if __name__ == "__main__":
     unittest.main()

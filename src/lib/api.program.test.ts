@@ -25,7 +25,7 @@ describe("program ops api", () => {
     global.fetch = originalFetch;
   });
 
-  it("creates week7 validation campaign", async () => {
+  it("creates validation campaign via canonical alias", async () => {
     const fetchMock = vi.fn(async () =>
       new Response(
         JSON.stringify({
@@ -48,10 +48,10 @@ describe("program ops api", () => {
     });
 
     expect(campaign.campaign_id).toBe("c-1");
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://localhost:8000/v1/program/week7/campaigns");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://localhost:8000/v1/program/campaigns");
   });
 
-  it("creates and evaluates week9 policy profile", async () => {
+  it("creates and evaluates policy profile via canonical alias", async () => {
     const fetchMock = vi
       .fn()
       .mockResolvedValueOnce(
@@ -93,7 +93,7 @@ describe("program ops api", () => {
       buildId: "b-1",
     });
     expect(decision.action).toBe("BLOCK");
-    expect(fetchMock.mock.calls[1]?.[0]).toBe("http://localhost:8000/v1/program/week9/policy-check");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe("http://localhost:8000/v1/program/policy-check");
   });
 
   it("stores secret and performs week12/week16 actions", async () => {
@@ -168,4 +168,3 @@ describe("program ops api", () => {
     expect(decision.status).toBe("GO");
   });
 });
-

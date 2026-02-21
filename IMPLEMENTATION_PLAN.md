@@ -1,5 +1,10 @@
 # Implementation Plan — Clarity Check
 
+> Canonical status has moved to:
+> `/Users/christopher/Documents/AntiGravity/clarity-check/doc/plans/agentic-orchestrator-program/00-single-source-of-truth.md`
+>
+> Use this file (`IMPLEMENTATION_PLAN.md`) as historical context only.
+
 **Last updated:** 2026-02-20
 **Source of truth:** `PRD.md` (Technical PRD v2.1)
 

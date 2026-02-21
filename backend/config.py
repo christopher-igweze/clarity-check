@@ -72,8 +72,29 @@ class Settings(BaseSettings):
     # Optional filesystem snapshot for program_store durability.
     # Leave unset in local dev/tests for purely in-memory behavior.
     program_store_state_path: str | None = None
+    # Optional filesystem snapshot for build_store durability.
+    # Leave unset in local dev/tests for purely in-memory behavior.
+    build_store_state_path: str | None = None
     # Maximum age for idempotency entries to avoid unbounded growth.
     idempotency_ttl_seconds: int = 86400
+
+    # --- Control Plane Persistence ---
+    # Persist orchestration/program state in Supabase when available.
+    control_plane_use_supabase: bool = False
+
+    # --- Ephemeral Coordination (optional Redis) ---
+    redis_url: str | None = None
+    # Fail closed when Redis coordination is unavailable (recommended in production).
+    coordination_fail_closed: bool = False
+
+    # --- Runtime Worker ---
+    runtime_worker_enabled: bool = True
+    runtime_worker_poll_seconds: float = 0.75
+    runtime_worker_lease_ttl_seconds: int = 20
+
+    # --- Authorization ---
+    # When true, sensitive control-plane routes require explicit capabilities.
+    enforce_capability_auth: bool = False
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

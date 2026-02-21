@@ -91,6 +91,23 @@ class RuntimeGateway:
                 build.metadata["level_cursor"] = state.level_cursor
             return retry_level
 
+    async def reset_build_state(self, build: BuildRun, *, reason: str) -> RuntimeSession | None:
+        async with self._lock:
+            state = self._states.get(build.build_id)
+            if state is None:
+                return None
+            state.executed_nodes = set()
+            state.level_cursor = 0
+            build.metadata["level_cursor"] = 0
+            state.session.status = "running"
+            state.session.metadata = {
+                **state.session.metadata,
+                "reset_reason": reason,
+                "dag_nodes": [node.node_id for node in build.dag],
+                "level_count": len(build.metadata.get("dag_levels", [])),
+            }
+            return state.session
+
     async def tick(self, build: BuildRun) -> RuntimeTickResult:
         async with self._lock:
             dag_levels = build.metadata.get("dag_levels")
