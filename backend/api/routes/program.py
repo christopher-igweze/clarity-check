@@ -8,6 +8,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from api.middleware.authorization import require_capability
 from api.middleware.rate_limit import limiter, rate_limit_string
+from config import settings
 from models.program import (
     CampaignRunIngestRequest,
     GoLiveDecision,
@@ -32,9 +33,27 @@ from models.program import (
 )
 from orchestration.benchmark_harness import ValidationBenchmarkReport
 from orchestration.program_store import program_store
-from services.ephemeral_coordination import CoordinationUnavailableError
+from services.ephemeral_coordination import (
+    CoordinationUnavailableError,
+    ephemeral_coordinator,
+)
 
 router = APIRouter()
+
+
+async def _ensure_coordination_ready() -> None:
+    if not settings.coordination_fail_closed:
+        return
+    ready = await ephemeral_coordinator.coordination_ready()
+    if ready:
+        return
+    raise HTTPException(
+        status_code=503,
+        detail={
+            "code": "coordination_unavailable",
+            "message": "Distributed coordination unavailable in fail-closed mode.",
+        },
+    )
 
 
 # Week 7
@@ -182,6 +201,7 @@ async def get_secret_metadata(secret_id: UUID, request: Request) -> SecretMetada
 @limiter.limit(rate_limit_string())
 async def ingest_platform_webhook(request: Request) -> PlatformWebhookResponse:
     require_capability(request, "program.webhook.ingest")
+    await _ensure_coordination_ready()
     nonce = request.headers.get("X-Platform-Nonce", "").strip()
     timestamp_str = request.headers.get("X-Platform-Timestamp", "").strip()
     signature = request.headers.get("X-Platform-Signature", "").strip()
@@ -247,6 +267,7 @@ async def idempotent_checkpoint(
     request: Request,
 ) -> IdempotentCheckpointResult:
     require_capability(request, "program.runtime.write")
+    await _ensure_coordination_ready()
     _ = request.state.user_id
     try:
         return await program_store.create_idempotent_checkpoint(

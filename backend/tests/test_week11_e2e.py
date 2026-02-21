@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import time
 import unittest
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from e2e_test_app import create_e2e_client, reset_rate_limiter
 from config import settings
 from orchestration.program_store import program_store
+from services.ephemeral_coordination import ephemeral_coordinator
 
 
 class Week11E2ETests(unittest.TestCase):
@@ -91,17 +93,22 @@ class Week11E2ETests(unittest.TestCase):
                 nonce=nonce,
                 body=body,
             )
-            resp = self.client.post(
-                "/v1/program/week11/webhook/ingest",
-                content=body,
-                headers={
-                    "X-Test-User": user,
-                    "X-Platform-Nonce": nonce,
-                    "X-Platform-Timestamp": str(timestamp),
-                    "X-Platform-Signature": signature,
-                    "Content-Type": "application/json",
-                },
-            )
+            with patch.object(
+                ephemeral_coordinator,
+                "coordination_ready",
+                new=AsyncMock(return_value=False),
+            ):
+                resp = self.client.post(
+                    "/v1/program/week11/webhook/ingest",
+                    content=body,
+                    headers={
+                        "X-Test-User": user,
+                        "X-Platform-Nonce": nonce,
+                        "X-Platform-Timestamp": str(timestamp),
+                        "X-Platform-Signature": signature,
+                        "Content-Type": "application/json",
+                    },
+                )
             self.assertEqual(resp.status_code, 503)
             self.assertEqual(resp.json()["detail"]["code"], "coordination_unavailable")
         finally:

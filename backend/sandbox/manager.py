@@ -54,15 +54,17 @@ class SandboxManager:
         self._sessions: dict[UUID, SandboxSession] = {}
         self._executor = SandboxExecutor()
 
-    async def provision(self, scan_id: UUID, clone_url: str) -> SandboxSession:
+    async def provision(
+        self,
+        scan_id: UUID,
+        clone_url: str,
+        *,
+        image_profile: str | None = None,
+    ) -> SandboxSession:
         """Spin up a sandbox, clone the repo, and return a session handle."""
         logger.info("Provisioning sandbox for scan %s", scan_id)
 
-        image = (
-            Image.debian_slim("3.12")
-            .pip_install(["semgrep"])
-            .workdir("/home/daytona")
-        )
+        image = self._resolve_image(image_profile=image_profile)
 
         sandbox = self._daytona.create(
             CreateSandboxFromImageParams(
@@ -88,6 +90,23 @@ class SandboxManager:
         self._sessions[scan_id] = session
         logger.info("Sandbox ready for scan %s", scan_id)
         return session
+
+    def _resolve_image(self, *, image_profile: str | None = None) -> Image:
+        profile = str(image_profile or "").strip().lower()
+        if profile == "openhands_runtime":
+            configured = str(settings.daytona_openhands_runtime_image or "").strip()
+            if configured:
+                return Image.base(configured).workdir("/home/daytona")
+            if settings.daytona_openhands_runtime_image_enforced:
+                raise RuntimeError(
+                    "OpenHands runtime image is enforced but DAYTONA_OPENHANDS_RUNTIME_IMAGE is unset."
+                )
+
+        return (
+            Image.debian_slim("3.12")
+            .pip_install(["semgrep"])
+            .workdir("/home/daytona")
+        )
 
     async def exec(
         self, scan_id: UUID, command: str, cwd: str | None = None, timeout: int = 120

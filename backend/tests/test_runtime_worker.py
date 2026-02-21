@@ -35,18 +35,22 @@ class RuntimeWorkerTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
             worker = RuntimeWorker(poll_seconds=0.05)
-            worker.start()
-            try:
-                for _ in range(80):
-                    row = await build_store.get_build(build.build_id)
-                    if row is not None and row.status.value in {"completed", "failed", "aborted"}:
-                        break
-                    await asyncio.sleep(0.05)
-                final = await build_store.get_build(build.build_id)
-                self.assertIsNotNone(final)
-                self.assertEqual(final.status.value, "completed")
-            finally:
-                await worker.stop()
+            with patch(
+                "orchestration.runtime_worker.build_store.list_running_build_ids",
+                new=AsyncMock(return_value=[build.build_id]),
+            ):
+                worker.start()
+                try:
+                    for _ in range(80):
+                        row = await build_store.get_build(build.build_id)
+                        if row is not None and row.status.value in {"completed", "failed", "aborted"}:
+                            break
+                        await asyncio.sleep(0.05)
+                    final = await build_store.get_build(build.build_id)
+                    self.assertIsNotNone(final)
+                    self.assertEqual(final.status.value, "completed")
+                finally:
+                    await worker.stop()
         finally:
             settings.coordination_fail_closed = original_fail_closed
 

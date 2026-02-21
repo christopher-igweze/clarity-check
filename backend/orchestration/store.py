@@ -14,6 +14,7 @@ from config import settings
 from models.builds import (
     BuildCheckpoint,
     BuildCreateRequest,
+    BuildDagPreview,
     BuildEvent,
     BuildRun,
     BuildRunSummary,
@@ -32,6 +33,7 @@ from models.builds import (
     TaskStatus,
     utc_now,
 )
+from orchestration.dag_planner import plan_adaptive_autonomous_dag, plan_agentic_llm_dag
 from orchestration.scheduler import compute_dag_levels
 from orchestration.telemetry import emit_orchestration_event
 from services.control_plane_state import load_state_snapshot, save_state_snapshot
@@ -82,11 +84,49 @@ def _deterministic_default_dag() -> list[DagNode]:
     ]
 
 
-def _resolve_default_dag(metadata: dict[str, Any]) -> tuple[list[DagNode], str]:
+def _resolve_default_dag(
+    metadata: dict[str, Any],
+    *,
+    objective: str,
+) -> tuple[list[DagNode], str, dict[str, Any]]:
     raw_mode = str(metadata.get("scan_mode") or "autonomous").strip().lower()
     if raw_mode in {"deterministic", "tier1", "free"}:
-        return _deterministic_default_dag(), "deterministic"
-    return _autonomous_default_dag(), "autonomous"
+        return _deterministic_default_dag(), "deterministic", {"profile": "deterministic_default_v1"}
+
+    profile = str(metadata.get("autonomous_planner_profile") or "static_v1").strip().lower()
+    if profile in {"adaptive", "adaptive_parallel_v1"}:
+        metadata["autonomous_planner_profile"] = "adaptive_parallel_v1"
+        dag, trace = plan_adaptive_autonomous_dag(metadata)
+        return dag, "autonomous", trace
+    if profile in {"agentic", "agentic_llm_v1"}:
+        metadata["autonomous_planner_profile"] = "agentic_llm_v1"
+        dag, trace = plan_agentic_llm_dag(
+            metadata=metadata,
+            objective=objective,
+        )
+        return dag, "autonomous", trace
+
+    metadata["autonomous_planner_profile"] = "static_v1"
+    return _autonomous_default_dag(), "autonomous", {"profile": "static_v1"}
+
+
+def _resolve_build_plan(request: BuildCreateRequest) -> tuple[list[DagNode], dict[str, Any], str]:
+    metadata = dict(request.metadata)
+    if request.dag is not None:
+        dag = request.dag
+        scan_mode = str(metadata.get("scan_mode") or "custom").strip().lower()
+    else:
+        dag, scan_mode, planner_trace = _resolve_default_dag(
+            metadata,
+            objective=request.objective,
+        )
+        metadata["planner_trace"] = planner_trace
+
+    metadata["scan_mode"] = scan_mode
+    dag_levels = compute_dag_levels(dag)
+    metadata["dag_levels"] = dag_levels
+    metadata["level_cursor"] = 0
+    return dag, metadata, scan_mode
 
 
 _VALID_STATUS_TRANSITIONS: dict[BuildStatus, set[BuildStatus]] = {
@@ -119,16 +159,8 @@ class BuildStore:
         async with self._lock:
             build_id = uuid4()
             now = utc_now()
-            metadata = dict(request.metadata)
-            if request.dag is not None:
-                dag = request.dag
-                scan_mode = str(metadata.get("scan_mode") or "custom").strip().lower()
-            else:
-                dag, scan_mode = _resolve_default_dag(metadata)
-            metadata["scan_mode"] = scan_mode
-            dag_levels = compute_dag_levels(dag)
-            metadata["dag_levels"] = dag_levels
-            metadata["level_cursor"] = 0
+            dag, metadata, scan_mode = _resolve_build_plan(request)
+            dag_levels = metadata.get("dag_levels", [])
             build = BuildRun(
                 build_id=build_id,
                 created_by=user_id,
@@ -185,6 +217,32 @@ class BuildStore:
             )
             self._save_state_unlocked()
             return build
+
+    async def preview_build_dag(self, request: BuildCreateRequest) -> BuildDagPreview:
+        dag, metadata, scan_mode = _resolve_build_plan(request)
+        planner_profile_raw = metadata.get("autonomous_planner_profile")
+        planner_profile = (
+            str(planner_profile_raw).strip()
+            if planner_profile_raw is not None
+            else None
+        )
+        dag_levels_raw = metadata.get("dag_levels", [])
+        dag_levels: list[list[str]] = []
+        if isinstance(dag_levels_raw, list):
+            for level in dag_levels_raw:
+                if isinstance(level, list):
+                    dag_levels.append([str(node_id) for node_id in level])
+        planner_trace_raw = metadata.get("planner_trace")
+        planner_trace = planner_trace_raw if isinstance(planner_trace_raw, dict) else {}
+
+        return BuildDagPreview(
+            scan_mode=scan_mode,
+            planner_profile=planner_profile or None,
+            planner_trace=planner_trace,
+            dag=dag,
+            dag_levels=dag_levels,
+            metadata=metadata,
+        )
 
     async def get_build(self, build_id: UUID) -> BuildRun | None:
         async with self._lock:

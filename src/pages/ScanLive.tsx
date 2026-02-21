@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import {
   abortBuildRun,
   bootstrapBuildRuntime,
+  getBuildRuntimeWorkerHealth,
   resumeBuildRun,
   streamBuildEvents,
   streamScanStatus,
@@ -214,12 +215,28 @@ const ScanLive = () => {
 
       (async () => {
         try {
-          const { runtimeWorkerEnabled } = await bootstrapBuildRuntime(buildId);
+          const {
+            runtimeWorkerEnabled,
+            runtimeClientFallbackEnabled,
+            runtimeWatchdogNudgeEnabled,
+            runtimeWatchdogStaleSeconds,
+          } = await bootstrapBuildRuntime(buildId);
           if (!runtimeWorkerEnabled) {
+            if (!runtimeClientFallbackEnabled) {
+              setStatus("error");
+              addLog({
+                agent: "System",
+                message:
+                  "Runtime worker is disabled and client fallback ticks are not allowed in this environment.",
+                type: "error",
+                color: "text-neon-red",
+              });
+              return;
+            }
             addLog({
               agent: "System",
               message:
-                "Runtime bootstrapped. Backend worker is disabled, so this page is running tick fallback mode.",
+                "Runtime bootstrapped. Backend worker is disabled, so this page is running explicit client fallback ticks.",
               type: "system",
               color: "text-neon-orange",
             });
@@ -251,20 +268,28 @@ const ScanLive = () => {
             type: "system",
             color: "text-muted-foreground",
           });
+          if (!runtimeWatchdogNudgeEnabled) {
+            return;
+          }
+          const staleGapMs = Math.max(10000, runtimeWatchdogStaleSeconds * 1000);
           while (!cancelled && statusRef.current === "scanning") {
             await new Promise((resolve) => setTimeout(resolve, 5000));
             if (cancelled || statusRef.current !== "scanning") {
               break;
             }
-            if (Date.now() - lastBuildEventAtRef.current < 10000) {
+            if (Date.now() - lastBuildEventAtRef.current < staleGapMs) {
               continue;
             }
             try {
+              const health = await getBuildRuntimeWorkerHealth(buildId);
+              if (!health.nudge_allowed) {
+                continue;
+              }
               await tickBuildRuntime(buildId);
               lastBuildEventAtRef.current = Date.now();
               addLog({
                 agent: "System",
-                message: "Worker heartbeat gap detected. Sent a runtime tick safety nudge.",
+                message: `Worker heartbeat gap (${health.stale_after_seconds}s+) detected. Sent runtime tick safety nudge.`,
                 type: "system",
                 color: "text-neon-orange",
               });

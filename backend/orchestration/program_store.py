@@ -66,8 +66,14 @@ class ProgramStore:
         self._release_checklists: dict[str, ReleaseChecklist] = {}
         self._rollback_drills: dict[str, RollbackDrill] = {}
         self._go_live_decisions: dict[str, GoLiveDecision] = {}
-        self._fernet = Fernet(self._fernet_key_from_secret(settings.supabase_jwt_secret))
-        self._platform_secret = settings.supabase_jwt_secret.encode("utf-8")
+        encryption_secret = (
+            settings.program_secret_encryption_secret or settings.supabase_jwt_secret
+        )
+        signing_secret = (
+            settings.platform_webhook_signing_secret or settings.supabase_jwt_secret
+        )
+        self._fernet = Fernet(self._fernet_key_from_secret(encryption_secret))
+        self._platform_secret = signing_secret.encode("utf-8")
         resolved_state_path = state_path if state_path is not None else settings.program_store_state_path
         self._state_path = Path(resolved_state_path).expanduser() if resolved_state_path else None
         self._state_key = "program_store"

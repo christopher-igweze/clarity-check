@@ -38,6 +38,11 @@ class Settings(BaseSettings):
     # Optional. If unset, Daytona will use the account/org default target.
     # Some organizations may not have all regions enabled (e.g. "us").
     daytona_target: str | None = None
+    # Optional hardened runtime image reference for OpenHands node execution.
+    # Example: ghcr.io/org/clarity-check-openhands-runtime:2026-02-21
+    daytona_openhands_runtime_image: str | None = None
+    # When true, OpenHands runtime execution requires `daytona_openhands_runtime_image`.
+    daytona_openhands_runtime_image_enforced: bool = False
 
     # --- Model Selection (OpenRouter model identifiers) ---
     model_scanner: str = "google/gemini-2.5-pro"
@@ -77,6 +82,12 @@ class Settings(BaseSettings):
     build_store_state_path: str | None = None
     # Maximum age for idempotency entries to avoid unbounded growth.
     idempotency_ttl_seconds: int = 86400
+    # Optional secret used to derive at-rest encryption keys for program secrets.
+    # Falls back to `supabase_jwt_secret` when unset for backward compatibility.
+    program_secret_encryption_secret: str | None = None
+    # Optional secret used for platform webhook signature verification.
+    # Falls back to `supabase_jwt_secret` when unset for backward compatibility.
+    platform_webhook_signing_secret: str | None = None
 
     # --- Control Plane Persistence ---
     # Persist orchestration/program state in Supabase when available.
@@ -91,6 +102,14 @@ class Settings(BaseSettings):
     runtime_worker_enabled: bool = True
     runtime_worker_poll_seconds: float = 0.75
     runtime_worker_lease_ttl_seconds: int = 20
+    # Allow client-side runtime tick fallback when worker is disabled.
+    # Keep this off in production; only use for local/dev emergency operation.
+    runtime_client_tick_fallback_enabled: bool = False
+    # Allow client watchdog to send emergency tick nudges when worker stalls.
+    runtime_watchdog_nudge_enabled: bool = False
+    runtime_watchdog_stale_seconds: int = 45
+    # Maximum number of DAG nodes to execute concurrently per runtime tick.
+    runtime_node_parallelism: int = 4
 
     # --- Authorization ---
     # When true, sensitive control-plane routes require explicit capabilities.

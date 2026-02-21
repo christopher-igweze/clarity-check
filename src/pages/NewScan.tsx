@@ -8,8 +8,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { Input } from "@/components/ui/input";
 import {
   BUILD_CONTROL_PLANE_ENABLED,
+  type BuildDagPreviewResponse,
   createBuildRun,
   getLimits,
+  previewBuildDag,
   runPrimer,
   startAudit,
   TIER1_ENABLED,
@@ -57,6 +59,14 @@ const NewScan = () => {
   const [step, setStep] = useState(1);
   const [loading, setLoading] = useState(false);
   const [primerLoading, setPrimerLoading] = useState(false);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [dagPreview, setDagPreview] = useState<{
+    plannerProfile?: string | null;
+    plannerTrace?: Record<string, unknown>;
+    dag: Array<{ nodeId: string; title: string; agent: string; dependsOn: string[]; gate?: string | null }>;
+    dagLevels: string[][];
+    policyRiskReasons: string[];
+  } | null>(null);
 
   const [repoUrl, setRepoUrl] = useState(navState?.repoUrl || "");
   const [vibePrompt, setVibePrompt] = useState(navState?.vibePrompt || "");
@@ -117,6 +127,21 @@ const NewScan = () => {
     return false;
   }, [step, repoUrl, productSummary, targetUsers, sensitiveData, mustNotBreakFlows, deploymentTarget, scaleExpectation]);
 
+  useEffect(() => {
+    setDagPreview(null);
+  }, [
+    repoUrl,
+    projectOrigin,
+    productSummary,
+    targetUsers,
+    sensitiveData,
+    mustNotBreakFlows,
+    deploymentTarget,
+    scaleExpectation,
+    primer?.summary,
+    primer?.confidence,
+  ]);
+
   const ensurePrimer = async () => {
     if (!repoUrl.trim() || primer || primerLoading) return;
     setPrimerLoading(true);
@@ -166,6 +191,66 @@ const NewScan = () => {
     setCustomFlow("");
   };
 
+  const buildControlObjective = () => `Audit ${repoUrl.trim()} for product risk and reliability`;
+
+  const buildControlMetadata = () => ({
+    scan_mode: "autonomous",
+    fallback_scan_mode: "deterministic",
+    autonomous_planner_profile: "agentic_llm_v1",
+    project_intake: {
+      project_origin: projectOrigin,
+      product_summary: productSummary.trim(),
+      target_users: targetUsers.trim(),
+      sensitive_data: sensitiveData,
+      must_not_break_flows: mustNotBreakFlows,
+      deployment_target: deploymentTarget,
+      scale_expectation: scaleExpectation,
+    },
+    primer_summary: primer?.summary || null,
+    primer_confidence: primer?.confidence ?? null,
+  });
+
+  const policyRiskReasonsFromPreview = (preview: BuildDagPreviewResponse): string[] => {
+    const hasPolicyGate = (preview.dag || []).some(
+      (row) => String(row.gate || "").toUpperCase() === "POLICY_GATE",
+    );
+    const reasons: string[] = [];
+    if (!hasPolicyGate) {
+      reasons.push("Planned DAG is missing a POLICY_GATE node.");
+    }
+    return reasons;
+  };
+
+  const mapDagPreview = (preview: BuildDagPreviewResponse) => {
+    const policyRiskReasons = policyRiskReasonsFromPreview(preview);
+    return {
+      plannerProfile: preview.planner_profile,
+      plannerTrace: preview.planner_trace || {},
+      dag: (preview.dag || []).map((row) => ({
+        nodeId: row.node_id,
+        title: row.title,
+        agent: row.agent,
+        dependsOn: row.depends_on || [],
+        gate: row.gate || null,
+      })),
+      dagLevels: preview.dag_levels || [],
+      policyRiskReasons,
+    };
+  };
+
+  const loadDagPreviewForCurrentInputs = async () => {
+    const objective = buildControlObjective();
+    const metadata = buildControlMetadata();
+    const preview = await previewBuildDag({
+      repoUrl: repoUrl.trim(),
+      objective,
+      metadata,
+    });
+    const mapped = mapDagPreview(preview);
+    setDagPreview(mapped);
+    return { objective, metadata, mapped };
+  };
+
   const goNext = async () => {
     if (!canNext) return;
     if (step === 1) {
@@ -180,25 +265,20 @@ const NewScan = () => {
 
     try {
       if (BUILD_CONTROL_PLANE_ENABLED) {
-        const objective = `Audit ${repoUrl.trim()} for product risk and reliability`;
+        const { objective, metadata, mapped } = await loadDagPreviewForCurrentInputs();
+        if (mapped.policyRiskReasons.length > 0) {
+          toast({
+            title: "Build blocked by policy risk",
+            description: mapped.policyRiskReasons[0],
+            variant: "destructive",
+          });
+          return;
+        }
+
         const build = await createBuildRun({
           repoUrl: repoUrl.trim(),
           objective,
-          metadata: {
-            scan_mode: "autonomous",
-            fallback_scan_mode: "deterministic",
-            project_intake: {
-              project_origin: projectOrigin,
-              product_summary: productSummary.trim(),
-              target_users: targetUsers.trim(),
-              sensitive_data: sensitiveData,
-              must_not_break_flows: mustNotBreakFlows,
-              deployment_target: deploymentTarget,
-              scale_expectation: scaleExpectation,
-            },
-            primer_summary: primer?.summary || null,
-            primer_confidence: primer?.confidence ?? null,
-          },
+          metadata,
         });
         navigate("/scan/live", {
           state: {
@@ -273,6 +353,34 @@ const NewScan = () => {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handlePreviewDag = async () => {
+    if (!repoUrl.trim() || !canNext || !BUILD_CONTROL_PLANE_ENABLED) return;
+    setPreviewLoading(true);
+    try {
+      const { mapped } = await loadDagPreviewForCurrentInputs();
+      if (mapped.policyRiskReasons.length > 0) {
+        toast({
+          title: "Policy risk detected",
+          description: mapped.policyRiskReasons[0],
+          variant: "destructive",
+        });
+      } else {
+        toast({
+          title: "DAG preview ready",
+          description: `Planned ${mapped.dag.length} nodes across ${mapped.dagLevels.length} levels.`,
+        });
+      }
+    } catch (err) {
+      toast({
+        title: "Preview failed",
+        description: err instanceof Error ? err.message : "Failed to preview DAG.",
+        variant: "destructive",
+      });
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -474,6 +582,49 @@ const NewScan = () => {
                   ))}
                 </select>
               </div>
+
+              {BUILD_CONTROL_PLANE_ENABLED && (
+                <div className="rounded-lg border border-border bg-secondary/40 p-4 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-medium">Agentic DAG preview</p>
+                      <p className="text-xs text-muted-foreground">
+                        Preview `agentic_llm_v1` plan before build creation.
+                      </p>
+                    </div>
+                    <Button variant="outline" onClick={handlePreviewDag} disabled={previewLoading || loading || primerLoading}>
+                      {previewLoading ? <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Previewing...</> : "Preview DAG"}
+                    </Button>
+                  </div>
+                  {dagPreview && (
+                    <div className="space-y-2 text-xs">
+                      <p className="text-muted-foreground">
+                        Profile: <span className="text-foreground">{dagPreview.plannerProfile || "unknown"}</span>
+                        {" • "}
+                        Nodes: <span className="text-foreground">{dagPreview.dag.length}</span>
+                        {" • "}
+                        Levels: <span className="text-foreground">{dagPreview.dagLevels.length}</span>
+                      </p>
+                      <div className="max-h-44 overflow-auto rounded border border-border bg-background/60 p-2">
+                        {dagPreview.dag.map((node) => (
+                          <div key={node.nodeId} className="py-1 border-b border-border/50 last:border-0">
+                            <span className="font-medium">{node.nodeId}</span>
+                            <span className="text-muted-foreground"> ({node.agent}) </span>
+                            <span>{node.title}</span>
+                          </div>
+                        ))}
+                      </div>
+                      {dagPreview.policyRiskReasons.length > 0 && (
+                        <div className="rounded border border-destructive/40 bg-destructive/10 p-2 text-destructive">
+                          {dagPreview.policyRiskReasons.map((reason) => (
+                            <p key={reason}>{reason}</p>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

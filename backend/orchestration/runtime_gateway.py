@@ -6,7 +6,7 @@ import asyncio
 from dataclasses import dataclass
 from uuid import UUID, uuid4
 
-from models.builds import BuildRun
+from models.builds import BuildRun, TaskStatus
 from models.runtime import RuntimeSession, RuntimeTickResult
 from orchestration.scheduler import compute_dag_levels, find_level
 from orchestration.telemetry import emit_runtime_metric
@@ -50,7 +50,7 @@ class RuntimeGateway:
             )
             self._states[build.build_id] = RuntimeState(
                 session=session,
-                executed_nodes=set(),
+                executed_nodes=self._durable_executed_nodes(build),
                 level_cursor=max(0, level_cursor),
             )
             emit_runtime_metric(
@@ -115,6 +115,7 @@ class RuntimeGateway:
                 dag_levels = compute_dag_levels(build.dag)
                 build.metadata["dag_levels"] = dag_levels
 
+            durable_executed = self._durable_executed_nodes(build)
             state = self._states.get(build.build_id)
             if state is None:
                 session = RuntimeSession(
@@ -126,10 +127,13 @@ class RuntimeGateway:
                 level_cursor = int(build.metadata.get("level_cursor", 0))
                 state = RuntimeState(
                     session=session,
-                    executed_nodes=set(),
+                    executed_nodes=set(durable_executed),
                     level_cursor=max(0, level_cursor),
                 )
                 self._states[build.build_id] = state
+            else:
+                # Rehydrate execution progress from durable task state on every tick.
+                state.executed_nodes = set(durable_executed)
 
             state.session.status = "running"
 
@@ -199,6 +203,14 @@ class RuntimeGateway:
                 level_completed=level_completed,
                 finished=finished,
             )
+
+    @staticmethod
+    def _durable_executed_nodes(build: BuildRun) -> set[str]:
+        return {
+            task.node_id
+            for task in build.task_runs
+            if task.status in {TaskStatus.completed, TaskStatus.skipped}
+        }
 
 
 runtime_gateway = RuntimeGateway()

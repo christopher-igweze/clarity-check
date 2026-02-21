@@ -172,6 +172,15 @@ class BuildCreateRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class BuildDagPreview(BaseModel):
+    scan_mode: str
+    planner_profile: str | None = None
+    planner_trace: dict[str, Any] = Field(default_factory=dict)
+    dag: list[DagNode] = Field(default_factory=list)
+    dag_levels: list[list[str]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class BuildCheckpointRequest(BaseModel):
     reason: str = "manual_checkpoint"
 

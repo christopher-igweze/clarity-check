@@ -14,6 +14,8 @@ import {
   listProgramSecrets,
 } from "@/lib/api";
 
+const TEST_API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || "http://localhost:8000").replace(/\/$/, "");
+
 describe("program ops api", () => {
   const originalFetch = global.fetch;
 
@@ -48,7 +50,7 @@ describe("program ops api", () => {
     });
 
     expect(campaign.campaign_id).toBe("c-1");
-    expect(fetchMock.mock.calls[0]?.[0]).toBe("http://localhost:8000/v1/program/campaigns");
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(`${TEST_API_BASE_URL}/v1/program/campaigns`);
   });
 
   it("creates and evaluates policy profile via canonical alias", async () => {
@@ -93,7 +95,7 @@ describe("program ops api", () => {
       buildId: "b-1",
     });
     expect(decision.action).toBe("BLOCK");
-    expect(fetchMock.mock.calls[1]?.[0]).toBe("http://localhost:8000/v1/program/policy-check");
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(`${TEST_API_BASE_URL}/v1/program/policy-check`);
   });
 
   it("stores secret and performs week12/week16 actions", async () => {

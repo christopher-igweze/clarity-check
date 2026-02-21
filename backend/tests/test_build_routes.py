@@ -26,7 +26,7 @@ class BuildRouteTests(unittest.TestCase):
 
         @app.middleware("http")
         async def _inject_user(request, call_next):
-            request.state.user_id = "user_test"
+            request.state.user_id = request.headers.get("X-Test-User", "user_test")
             return await call_next(request)
 
         app.include_router(builds.router)
@@ -57,6 +57,132 @@ class BuildRouteTests(unittest.TestCase):
         fetched = get_resp.json()
         self.assertEqual(fetched["build_id"], build_id)
         self.assertEqual(fetched["repo_url"], self._create_payload()["repo_url"])
+
+    def test_create_build_uses_adaptive_planner_profile_when_requested(self) -> None:
+        create_resp = self.client.post(
+            "/v1/builds",
+            json={
+                "repo_url": "https://github.com/octocat/Hello-World",
+                "objective": "adaptive planner",
+                "metadata": {
+                    "scan_mode": "autonomous",
+                    "autonomous_planner_profile": "adaptive_parallel_v1",
+                    "project_intake": {
+                        "must_not_break_flows": ["Checkout flow"],
+                        "sensitive_data": ["none"],
+                        "scale_expectation": "high",
+                    },
+                },
+            },
+        )
+        self.assertEqual(create_resp.status_code, 200)
+        build = create_resp.json()
+        dag_nodes = [node["node_id"] for node in build["dag"]]
+        self.assertIn("flow-guard-checkout-flow", dag_nodes)
+        self.assertIn("scale-readiness-check", dag_nodes)
+        self.assertEqual(
+            build["metadata"]["autonomous_planner_profile"],
+            "adaptive_parallel_v1",
+        )
+        self.assertEqual(
+            build["metadata"]["planner_trace"]["profile"],
+            "adaptive_parallel_v1",
+        )
+
+    def test_create_build_uses_agentic_profile_blueprint_when_provided(self) -> None:
+        create_resp = self.client.post(
+            "/v1/builds",
+            json={
+                "repo_url": "https://github.com/octocat/Hello-World",
+                "objective": "agentic planner profile",
+                "metadata": {
+                    "scan_mode": "autonomous",
+                    "autonomous_planner_profile": "agentic_llm_v1",
+                    "planner_dag_blueprint": [
+                        {
+                            "node_id": "scan",
+                            "title": "Scan",
+                            "agent": "scanner",
+                            "depends_on": [],
+                        },
+                        {
+                            "node_id": "plan",
+                            "title": "Plan",
+                            "agent": "planner",
+                            "depends_on": ["scan"],
+                            "gate": "MERGE_GATE",
+                        },
+                    ],
+                },
+            },
+        )
+        self.assertEqual(create_resp.status_code, 200)
+        build = create_resp.json()
+        dag_nodes = [node["node_id"] for node in build["dag"]]
+        self.assertEqual(dag_nodes, ["scan", "plan"])
+        self.assertEqual(
+            build["metadata"]["autonomous_planner_profile"],
+            "agentic_llm_v1",
+        )
+        self.assertEqual(
+            build["metadata"]["planner_trace"]["profile"],
+            "agentic_llm_v1",
+        )
+
+    def test_preview_dag_returns_agentic_blueprint_without_creating_build(self) -> None:
+        before_count = len(self.client.get("/v1/builds?limit=500").json())
+        preview_resp = self.client.post(
+            "/v1/builds/preview-dag",
+            json={
+                "repo_url": "https://github.com/octocat/Hello-World",
+                "objective": "preview agentic dag",
+                "metadata": {
+                    "scan_mode": "autonomous",
+                    "autonomous_planner_profile": "agentic_llm_v1",
+                    "planner_dag_blueprint": [
+                        {
+                            "node_id": "scan",
+                            "title": "Scan",
+                            "agent": "scanner",
+                            "depends_on": [],
+                        },
+                        {
+                            "node_id": "plan",
+                            "title": "Plan",
+                            "agent": "planner",
+                            "depends_on": ["scan"],
+                        },
+                    ],
+                },
+            },
+        )
+        self.assertEqual(preview_resp.status_code, 200)
+        payload = preview_resp.json()
+        self.assertEqual(payload["scan_mode"], "autonomous")
+        self.assertEqual(payload["planner_profile"], "agentic_llm_v1")
+        self.assertEqual(payload["planner_trace"]["profile"], "agentic_llm_v1")
+        self.assertEqual([row["node_id"] for row in payload["dag"]], ["scan", "plan"])
+        after_count = len(self.client.get("/v1/builds?limit=500").json())
+        self.assertEqual(before_count, after_count)
+
+    def test_preview_dag_agentic_profile_falls_back_when_blueprint_invalid(self) -> None:
+        preview_resp = self.client.post(
+            "/v1/builds/preview-dag",
+            json={
+                "repo_url": "https://github.com/octocat/Hello-World",
+                "objective": "preview fallback",
+                "metadata": {
+                    "scan_mode": "autonomous",
+                    "autonomous_planner_profile": "agentic_llm_v1",
+                    "planner_dag_blueprint": [{"node_id": "invalid-without-agent"}],
+                },
+            },
+        )
+        self.assertEqual(preview_resp.status_code, 200)
+        payload = preview_resp.json()
+        self.assertEqual(payload["planner_profile"], "agentic_llm_v1")
+        self.assertEqual(payload["planner_trace"]["profile"], "agentic_llm_v1_fallback")
+        self.assertGreaterEqual(len(payload["dag"]), 4)
 
     def test_list_builds_filters_by_status(self) -> None:
         created_ids: list[str] = []
@@ -163,6 +289,12 @@ class BuildRouteTests(unittest.TestCase):
         self.assertIn("event: BUILD_FINISHED", events_resp.text)
         self.assertIn("event: CHECKPOINT_CREATED", events_resp.text)
 
+        history_resp = self.client.get(f"/v1/builds/{build_id}/events/history?cursor=0&limit=5")
+        self.assertEqual(history_resp.status_code, 200)
+        events = history_resp.json()
+        self.assertGreaterEqual(len(events), 1)
+        self.assertEqual(events[0]["event_type"], "BUILD_STATUS_CHANGED")
+
     def test_task_run_lifecycle_and_retrieval(self) -> None:
         create_resp = self.client.post("/v1/builds", json=self._create_payload())
         self.assertEqual(create_resp.status_code, 200)
@@ -251,6 +383,26 @@ class BuildRouteTests(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 422)
         self.assertEqual(resp.json()["detail"]["code"], "invalid_dag")
+
+    def test_build_routes_enforce_owner_access(self) -> None:
+        create_resp = self.client.post("/v1/builds", json=self._create_payload())
+        self.assertEqual(create_resp.status_code, 200)
+        build_id = create_resp.json()["build_id"]
+
+        denied_get = self.client.get(
+            f"/v1/builds/{build_id}",
+            headers={"X-Test-User": "other_user"},
+        )
+        self.assertEqual(denied_get.status_code, 403)
+        self.assertEqual(denied_get.json()["detail"]["code"], "build_access_denied")
+
+        denied_abort = self.client.post(
+            f"/v1/builds/{build_id}/abort",
+            json={"reason": "cross-user abort"},
+            headers={"X-Test-User": "other_user"},
+        )
+        self.assertEqual(denied_abort.status_code, 403)
+        self.assertEqual(denied_abort.json()["detail"]["code"], "build_access_denied")
 
     def test_replan_modify_dag_records_decision_and_extends_graph(self) -> None:
         create_resp = self.client.post("/v1/builds", json=self._create_payload())

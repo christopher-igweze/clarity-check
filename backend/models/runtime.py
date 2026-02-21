@@ -34,6 +34,15 @@ class RuntimeTickResult(BaseModel):
     finished: bool = False
 
 
+class RuntimeWorkerHealth(BaseModel):
+    build_id: UUID
+    worker_enabled: bool = False
+    worker_stale: bool = False
+    nudge_allowed: bool = False
+    stale_after_seconds: int = 0
+    last_runtime_event_at: datetime | None = None
+
+
 class RuntimeMetric(BaseModel):
     metric: str
     build_id: UUID | None = None

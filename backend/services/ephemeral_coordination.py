@@ -52,23 +52,27 @@ class EphemeralCoordinator:
         return self._redis
 
     async def claim_nonce(self, nonce: str, *, ttl_seconds: int) -> bool:
+        now_ts = int(time.time())
+        async with self._lock:
+            self._prune_nonces_unlocked(now_ts, ttl_seconds=ttl_seconds)
+            if nonce in self._nonce_seen:
+                return False
+
         redis_client = await self._redis_client()
         key = f"cp:nonce:{nonce}"
         if redis_client is not None:
             try:
                 claimed = await redis_client.set(key, str(int(time.time())), ex=ttl_seconds, nx=True)
-                return bool(claimed)
+                if not claimed:
+                    return False
+                async with self._lock:
+                    self._nonce_seen[nonce] = now_ts
+                return True
             except Exception:
                 logger.warning("Redis nonce claim failed; using in-process fallback.")
                 self._assert_fallback_allowed("redis_nonce_claim_failed")
 
-        now_ts = int(time.time())
         async with self._lock:
-            expired = [token for token, seen in self._nonce_seen.items() if (now_ts - seen) > ttl_seconds]
-            for token in expired:
-                self._nonce_seen.pop(token, None)
-            if nonce in self._nonce_seen:
-                return False
             self._nonce_seen[nonce] = now_ts
             return True
 
@@ -229,6 +233,11 @@ class EphemeralCoordinator:
         ]
         for key in expired_keys:
             self._leases.pop(key, None)
+
+    def _prune_nonces_unlocked(self, now_ts: int, *, ttl_seconds: int) -> None:
+        expired = [token for token, seen in self._nonce_seen.items() if (now_ts - seen) > ttl_seconds]
+        for token in expired:
+            self._nonce_seen.pop(token, None)
 
 
 ephemeral_coordinator = EphemeralCoordinator(settings.redis_url)

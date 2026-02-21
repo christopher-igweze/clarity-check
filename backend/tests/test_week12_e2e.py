@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import AsyncMock, patch
 from uuid import uuid4
 
 from e2e_test_app import create_e2e_client, reset_rate_limiter
 from config import settings
+from services.ephemeral_coordination import ephemeral_coordinator
 
 
 class Week12E2ETests(unittest.TestCase):
@@ -73,15 +75,20 @@ class Week12E2ETests(unittest.TestCase):
             self.assertEqual(build_resp.status_code, 200)
             build_id = build_resp.json()["build_id"]
 
-            resp = self.client.post(
-                "/v1/program/week12/idempotent-checkpoints",
-                json={
-                    "build_id": build_id,
-                    "idempotency_key": "week12-fail-closed",
-                    "reason": "checkpoint_fail_closed",
-                },
-                headers={"X-Test-User": user},
-            )
+            with patch.object(
+                ephemeral_coordinator,
+                "coordination_ready",
+                new=AsyncMock(return_value=False),
+            ):
+                resp = self.client.post(
+                    "/v1/program/week12/idempotent-checkpoints",
+                    json={
+                        "build_id": build_id,
+                        "idempotency_key": "week12-fail-closed",
+                        "reason": "checkpoint_fail_closed",
+                    },
+                    headers={"X-Test-User": user},
+                )
             self.assertEqual(resp.status_code, 503)
             self.assertEqual(resp.json()["detail"]["code"], "coordination_unavailable")
         finally:

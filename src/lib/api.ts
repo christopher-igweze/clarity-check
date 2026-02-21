@@ -262,6 +262,22 @@ export type BuildRunResponse = {
   status: string;
 };
 
+export type BuildDagPreviewResponse = {
+  scan_mode: string;
+  planner_profile?: string | null;
+  planner_trace?: Record<string, unknown>;
+  dag: Array<{
+    node_id: string;
+    title: string;
+    agent: string;
+    depends_on: string[];
+    gate?: string | null;
+    status?: string;
+  }>;
+  dag_levels: string[][];
+  metadata?: Record<string, unknown>;
+};
+
 export type BuildRuntimeTick = {
   build_id: string;
   runtime_id: string;
@@ -271,6 +287,15 @@ export type BuildRuntimeTick = {
   level_started?: number | null;
   level_completed?: number | null;
   finished: boolean;
+};
+
+export type BuildRuntimeWorkerHealth = {
+  build_id: string;
+  worker_enabled: boolean;
+  worker_stale: boolean;
+  nudge_allowed: boolean;
+  stale_after_seconds: number;
+  last_runtime_event_at?: string | null;
 };
 
 export type BuildStatusEvent = {
@@ -484,6 +509,30 @@ export async function createBuildRun({
   };
 }
 
+export async function previewBuildDag({
+  repoUrl,
+  objective,
+  metadata,
+}: {
+  repoUrl: string;
+  objective: string;
+  metadata?: Record<string, unknown>;
+}): Promise<BuildDagPreviewResponse> {
+  const resp = await fetch(`${API_BASE_URL}/v1/builds/preview-dag`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify({
+      repo_url: repoUrl,
+      objective,
+      metadata: metadata || {},
+    }),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to preview orchestration DAG");
+  }
+  return (await resp.json()) as BuildDagPreviewResponse;
+}
+
 export async function getBuildRun(buildId: string): Promise<{ status: string }> {
   const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}`, {
     method: "GET",
@@ -562,7 +611,13 @@ export async function submitReplanDecision({
 
 export async function bootstrapBuildRuntime(
   buildId: string,
-): Promise<{ runtimeId: string; runtimeWorkerEnabled: boolean }> {
+): Promise<{
+  runtimeId: string;
+  runtimeWorkerEnabled: boolean;
+  runtimeClientFallbackEnabled: boolean;
+  runtimeWatchdogNudgeEnabled: boolean;
+  runtimeWatchdogStaleSeconds: number;
+}> {
   const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}/runtime/bootstrap`, {
     method: "POST",
     headers: await getAuthHeaders(),
@@ -575,6 +630,9 @@ export async function bootstrapBuildRuntime(
   return {
     runtimeId: data.runtime_id as string,
     runtimeWorkerEnabled: Boolean(metadata.runtime_worker_enabled ?? true),
+    runtimeClientFallbackEnabled: Boolean(metadata.runtime_client_tick_fallback_enabled ?? false),
+    runtimeWatchdogNudgeEnabled: Boolean(metadata.runtime_watchdog_nudge_enabled ?? false),
+    runtimeWatchdogStaleSeconds: Number(metadata.runtime_watchdog_stale_seconds ?? 45),
   };
 }
 
@@ -587,6 +645,19 @@ export async function tickBuildRuntime(buildId: string): Promise<BuildRuntimeTic
     throw await toApiError(resp, "Failed to tick runtime");
   }
   return (await resp.json()) as BuildRuntimeTick;
+}
+
+export async function getBuildRuntimeWorkerHealth(
+  buildId: string,
+): Promise<BuildRuntimeWorkerHealth> {
+  const resp = await fetch(`${API_BASE_URL}/v1/builds/${buildId}/runtime/worker-health`, {
+    method: "GET",
+    headers: await getAuthHeaders(),
+  });
+  if (!resp.ok) {
+    throw await toApiError(resp, "Failed to load runtime worker health");
+  }
+  return (await resp.json()) as BuildRuntimeWorkerHealth;
 }
 
 export async function streamBuildEvents({
@@ -943,7 +1014,7 @@ export async function createIdempotentCheckpoint({
   status: string;
   reason: string;
 }> {
-  const resp = await fetch(`${API_BASE_URL}/v1/program/week12/idempotent-checkpoints`, {
+  const resp = await fetch(`${API_BASE_URL}/v1/program/idempotent-checkpoints`, {
     method: "POST",
     headers: await getAuthHeaders(),
     body: JSON.stringify({

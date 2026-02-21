@@ -15,6 +15,8 @@ from models.builds import (
     BuildCheckpoint,
     BuildCheckpointRequest,
     BuildCreateRequest,
+    BuildDagPreview,
+    BuildEvent,
     BuildGateDecisionRequest,
     BuildRun,
     BuildRunSummary,
@@ -44,6 +46,25 @@ class BuildActionRequest(BaseModel):
     reason: str | None = None
 
 
+async def _get_owned_build(request: Request, build_id: UUID) -> BuildRun:
+    user_id: str = request.state.user_id
+    build = await build_store.get_build(build_id)
+    if build is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "build_not_found", "message": "Build not found."},
+        )
+    if build.created_by != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "build_access_denied",
+                "message": "You do not have access to this build.",
+            },
+        )
+    return build
+
+
 @router.get("/v1/builds", response_model=list[BuildRunSummary])
 async def list_builds(
     request: Request,
@@ -56,6 +77,22 @@ async def list_builds(
         status=status,
         limit=limit,
     )
+
+
+@router.post("/v1/builds/preview-dag", response_model=BuildDagPreview)
+@limiter.limit(rate_limit_string())
+async def preview_build_dag(
+    request_body: BuildCreateRequest,
+    request: Request,
+) -> BuildDagPreview:
+    _ = request.state.user_id
+    try:
+        return await build_store.preview_build_dag(request_body)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "invalid_dag", "message": str(exc)},
+        ) from exc
 
 
 @router.post("/v1/builds", response_model=BuildRun)
@@ -75,23 +112,19 @@ async def create_build(
 
 
 @router.get("/v1/builds/{build_id}", response_model=BuildRun)
-async def get_build(build_id: UUID) -> BuildRun:
-    build = await build_store.get_build(build_id)
-    if build is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "build_not_found", "message": "Build not found."},
-        )
-    return build
+async def get_build(build_id: UUID, request: Request) -> BuildRun:
+    return await _get_owned_build(request, build_id)
 
 
 @router.get("/v1/builds/{build_id}/tasks", response_model=list[TaskRun])
 async def list_task_runs(
     build_id: UUID,
+    request: Request,
     node_id: str | None = None,
     status: TaskStatus | None = None,
     limit: int = 200,
 ) -> list[TaskRun]:
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.list_task_runs(
             build_id,
@@ -107,7 +140,8 @@ async def list_task_runs(
 
 
 @router.get("/v1/builds/{build_id}/tasks/{task_run_id}", response_model=TaskRun)
-async def get_task_run(build_id: UUID, task_run_id: UUID) -> TaskRun:
+async def get_task_run(build_id: UUID, task_run_id: UUID, request: Request) -> TaskRun:
+    await _get_owned_build(request, build_id)
     try:
         task_run = await build_store.get_task_run(build_id, task_run_id)
     except KeyError as exc:
@@ -130,7 +164,7 @@ async def start_task_run(
     request_body: TaskRunStartRequest,
     request: Request,
 ) -> TaskRun:
-    _ = request.state.user_id
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.start_task_run(
             build_id,
@@ -163,7 +197,7 @@ async def complete_task_run(
     request_body: TaskRunCompleteRequest,
     request: Request,
 ) -> TaskRun:
-    _ = request.state.user_id
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.complete_task_run(
             build_id,
@@ -193,9 +227,11 @@ async def complete_task_run(
 @router.get("/v1/builds/{build_id}/gates", response_model=list[GateDecision])
 async def list_gate_decisions(
     build_id: UUID,
+    request: Request,
     gate: GateType | None = None,
     limit: int = 200,
 ) -> list[GateDecision]:
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.list_gate_decisions(
             build_id,
@@ -217,7 +253,7 @@ async def record_gate_decision(
     request_body: BuildGateDecisionRequest,
     request: Request,
 ) -> GateDecision:
-    _ = request.state.user_id
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.record_gate_decision(
             build_id,
@@ -237,8 +273,10 @@ async def record_gate_decision(
 @router.get("/v1/builds/{build_id}/replan", response_model=list[ReplanDecision])
 async def list_replan_decisions(
     build_id: UUID,
+    request: Request,
     limit: int = 200,
 ) -> list[ReplanDecision]:
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.list_replan_decisions(build_id, limit=limit)
     except KeyError as exc:
@@ -255,7 +293,7 @@ async def record_replan_decision(
     request_body: ReplanDecisionRequest,
     request: Request,
 ) -> ReplanDecision:
-    _ = request.state.user_id
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.record_replan_decision(
             build_id,
@@ -277,7 +315,8 @@ async def record_replan_decision(
 
 
 @router.get("/v1/builds/{build_id}/replan/suggest", response_model=ReplanSuggestion)
-async def suggest_replan_decision(build_id: UUID) -> ReplanSuggestion:
+async def suggest_replan_decision(build_id: UUID, request: Request) -> ReplanSuggestion:
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.suggest_replan_decision(build_id, source="debt_triage")
     except KeyError as exc:
@@ -294,7 +333,7 @@ async def apply_suggested_replan_decision(
     request_body: ReplanSuggestionApplyRequest,
     request: Request,
 ) -> ReplanDecision:
-    _ = request.state.user_id
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.apply_suggested_replan(
             build_id,
@@ -316,8 +355,10 @@ async def apply_suggested_replan_decision(
 @router.get("/v1/builds/{build_id}/debt", response_model=list[DebtItem])
 async def list_debt_items(
     build_id: UUID,
+    request: Request,
     limit: int = 200,
 ) -> list[DebtItem]:
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.list_debt_items(build_id, limit=limit)
     except KeyError as exc:
@@ -334,7 +375,7 @@ async def record_debt_item(
     request_body: DebtItemRequest,
     request: Request,
 ) -> DebtItem:
-    _ = request.state.user_id
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.record_debt_item(
             build_id,
@@ -353,8 +394,10 @@ async def record_debt_item(
 @router.get("/v1/builds/{build_id}/policy-violations", response_model=list[PolicyViolation])
 async def list_policy_violations(
     build_id: UUID,
+    request: Request,
     limit: int = 200,
 ) -> list[PolicyViolation]:
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.list_policy_violations(build_id, limit=limit)
     except KeyError as exc:
@@ -371,7 +414,7 @@ async def record_policy_violation(
     request_body: PolicyViolationRequest,
     request: Request,
 ) -> PolicyViolation:
-    _ = request.state.user_id
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.record_policy_violation(
             build_id,
@@ -394,7 +437,7 @@ async def resume_build(
     request_body: BuildActionRequest,
     request: Request,
 ) -> BuildRun:
-    _ = request.state.user_id
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.resume_build(build_id, reason=request_body.reason)
     except KeyError as exc:
@@ -419,7 +462,7 @@ async def abort_build(
     request_body: BuildActionRequest,
     request: Request,
 ) -> BuildRun:
-    _ = request.state.user_id
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.abort_build(build_id, reason=request_body.reason)
     except KeyError as exc:
@@ -481,27 +524,31 @@ async def _build_event_generator(build_id: UUID):
 
 
 @router.get("/v1/builds/{build_id}/events")
-async def stream_build_events(build_id: UUID) -> EventSourceResponse:
-    build = await build_store.get_build(build_id)
-    if build is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "build_not_found", "message": "Build not found."},
-        )
+async def stream_build_events(build_id: UUID, request: Request) -> EventSourceResponse:
+    await _get_owned_build(request, build_id)
     return EventSourceResponse(
         _build_event_generator(build_id),
         media_type="text/event-stream",
     )
 
 
+@router.get("/v1/builds/{build_id}/events/history", response_model=list[BuildEvent])
+async def list_build_events_history(
+    build_id: UUID,
+    request: Request,
+    cursor: int = 0,
+    limit: int = 500,
+) -> list[BuildEvent]:
+    await _get_owned_build(request, build_id)
+    safe_cursor = max(0, cursor)
+    safe_limit = max(1, min(limit, 2000))
+    events = await build_store.list_events(build_id)
+    return events[safe_cursor : safe_cursor + safe_limit]
+
+
 @router.get("/v1/builds/{build_id}/checkpoints", response_model=list[BuildCheckpoint])
-async def list_build_checkpoints(build_id: UUID) -> list[BuildCheckpoint]:
-    build = await build_store.get_build(build_id)
-    if build is None:
-        raise HTTPException(
-            status_code=404,
-            detail={"code": "build_not_found", "message": "Build not found."},
-        )
+async def list_build_checkpoints(build_id: UUID, request: Request) -> list[BuildCheckpoint]:
+    await _get_owned_build(request, build_id)
     return await build_store.list_checkpoints(build_id)
 
 
@@ -512,7 +559,7 @@ async def create_build_checkpoint(
     request_body: BuildCheckpointRequest,
     request: Request,
 ) -> BuildCheckpoint:
-    _ = request.state.user_id
+    await _get_owned_build(request, build_id)
     try:
         return await build_store.create_checkpoint(
             build_id,

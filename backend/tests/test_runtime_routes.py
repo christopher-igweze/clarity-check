@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import os
 import unittest
 from uuid import UUID
@@ -18,6 +19,7 @@ os.environ.setdefault("OPENROUTER_API_KEY", "test")
 os.environ.setdefault("DAYTONA_API_KEY", "test")
 
 from api.routes import builds, runtime  # noqa: E402
+from config import settings  # noqa: E402
 from orchestration.runner_bridge import runner_bridge  # noqa: E402
 from orchestration.store import build_store  # noqa: E402
 from orchestration.telemetry import reset_runtime_metrics  # noqa: E402
@@ -31,7 +33,7 @@ class RuntimeRouteTests(unittest.TestCase):
 
         @app.middleware("http")
         async def _inject_user(request, call_next):
-            request.state.user_id = "user_test"
+            request.state.user_id = request.headers.get("X-Test-User", "user_test")
             return await call_next(request)
 
         app.include_router(builds.router)
@@ -74,6 +76,43 @@ class RuntimeRouteTests(unittest.TestCase):
         status_resp = self.client.get(f"/v1/builds/{build_id}/runtime/status")
         self.assertEqual(status_resp.status_code, 200)
         self.assertEqual(status_resp.json()["runtime_id"], session["runtime_id"])
+
+    def test_runtime_worker_health_stale_detection_and_nudge_gate(self) -> None:
+        build_id = self._create_build()
+        stale_ts = datetime.now(timezone.utc) - timedelta(seconds=120)
+        build = build_store._builds[UUID(build_id)]
+        build.updated_at = stale_ts
+        events = build_store._events[UUID(build_id)]
+        for event in events:
+            event.timestamp = stale_ts
+
+        original_worker_enabled = settings.runtime_worker_enabled
+        original_watchdog_nudge = settings.runtime_watchdog_nudge_enabled
+        original_watchdog_stale = settings.runtime_watchdog_stale_seconds
+        try:
+            settings.runtime_worker_enabled = True
+            settings.runtime_watchdog_nudge_enabled = True
+            settings.runtime_watchdog_stale_seconds = 15
+
+            stale_resp = self.client.get(f"/v1/builds/{build_id}/runtime/worker-health")
+            self.assertEqual(stale_resp.status_code, 200)
+            stale_payload = stale_resp.json()
+            self.assertEqual(stale_payload["build_id"], build_id)
+            self.assertTrue(stale_payload["worker_enabled"])
+            self.assertTrue(stale_payload["worker_stale"])
+            self.assertTrue(stale_payload["nudge_allowed"])
+            self.assertEqual(stale_payload["stale_after_seconds"], 15)
+
+            settings.runtime_watchdog_nudge_enabled = False
+            disabled_resp = self.client.get(f"/v1/builds/{build_id}/runtime/worker-health")
+            self.assertEqual(disabled_resp.status_code, 200)
+            disabled_payload = disabled_resp.json()
+            self.assertTrue(disabled_payload["worker_stale"])
+            self.assertFalse(disabled_payload["nudge_allowed"])
+        finally:
+            settings.runtime_worker_enabled = original_worker_enabled
+            settings.runtime_watchdog_nudge_enabled = original_watchdog_nudge
+            settings.runtime_watchdog_stale_seconds = original_watchdog_stale
 
     def test_runtime_tick_emits_completion(self) -> None:
         build_id = self._create_build()
@@ -236,6 +275,40 @@ class RuntimeRouteTests(unittest.TestCase):
         self.assertEqual(logs[0]["workspace_id"], "ws-daytona-1")
         self.assertEqual(logs[0]["status"], "failed")
 
+    def test_runtime_tick_records_policy_violation_when_precheck_blocks_command(self) -> None:
+        build_id = self._create_build(
+            dag=[
+                {"node_id": "scanner", "title": "scan", "agent": "scanner", "depends_on": []},
+            ],
+            metadata={
+                "runner_kind": "daytona_shell",
+                "runner_results": {
+                    "scanner": {
+                        "command": "git reset --hard HEAD",
+                    }
+                },
+            },
+        )
+        self.client.post(f"/v1/builds/{build_id}/runtime/bootstrap")
+        tick_resp = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+        self.assertEqual(tick_resp.status_code, 200)
+
+        build_resp = self.client.get(f"/v1/builds/{build_id}")
+        self.assertEqual(build_resp.status_code, 200)
+        self.assertEqual(build_resp.json()["status"], "failed")
+
+        policy_resp = self.client.get(f"/v1/builds/{build_id}/policy-violations")
+        self.assertEqual(policy_resp.status_code, 200)
+        violations = policy_resp.json()
+        self.assertGreaterEqual(len(violations), 1)
+        self.assertEqual(violations[0]["code"], "blocked_command")
+
+        logs_resp = self.client.get(f"/v1/builds/{build_id}/runtime/logs?status=failed")
+        self.assertEqual(logs_resp.status_code, 200)
+        logs = logs_resp.json()
+        self.assertGreaterEqual(len(logs), 1)
+        self.assertEqual(logs[0]["metadata"]["execution_mode"], "policy_precheck")
+
     def test_runtime_tick_retries_within_budget_then_completes(self) -> None:
         build_id = self._create_build(
             dag=[
@@ -341,6 +414,31 @@ class RuntimeRouteTests(unittest.TestCase):
         self.assertEqual(build_payload["status"], "failed")
         self.assertGreaterEqual(len(build_payload["replan_history"]), 1)
 
+    def test_runtime_tick_replanner_abort_on_terminal_failure(self) -> None:
+        build_id = self._create_build(
+            dag=[
+                {"node_id": "scanner", "title": "scan", "agent": "scanner", "depends_on": []},
+            ],
+            metadata={
+                "max_task_retries": 0,
+                "replanner_abort_on_terminal_failure": True,
+                "runner_results": {
+                    "scanner": {
+                        "status_sequence": ["failed"],
+                        "error_sequence": ["non-recoverable failure"],
+                    }
+                },
+            },
+        )
+        self.client.post(f"/v1/builds/{build_id}/runtime/bootstrap")
+        tick_resp = self.client.post(f"/v1/builds/{build_id}/runtime/tick")
+        self.assertEqual(tick_resp.status_code, 200)
+
+        build_payload = self.client.get(f"/v1/builds/{build_id}").json()
+        self.assertEqual(build_payload["status"], "aborted")
+        self.assertGreaterEqual(len(build_payload["replan_history"]), 1)
+        self.assertEqual(build_payload["replan_history"][0]["action"], "ABORT")
+
     def test_runtime_tick_executes_single_level_per_tick(self) -> None:
         build_id = self._create_build(
             dag=[
@@ -368,6 +466,16 @@ class RuntimeRouteTests(unittest.TestCase):
         level_events = [entry for entry in events if entry.event_type == "LEVEL_STARTED"]
         self.assertGreaterEqual(len(level_events), 2)
         self.assertEqual(level_events[-1].payload.get("level"), 1)
+
+    def test_runtime_routes_enforce_owner_access(self) -> None:
+        build_id = self._create_build()
+
+        denied = self.client.post(
+            f"/v1/builds/{build_id}/runtime/bootstrap",
+            headers={"X-Test-User": "other_user"},
+        )
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.json()["detail"]["code"], "build_access_denied")
 
 
 if __name__ == "__main__":
